@@ -38,6 +38,7 @@ export default function AIPanel() {
   const aiSuggestions = useAppStore(s => s.aiSuggestions);
   const characters = useAppStore(s => s.characters);
   const clearAISuggestions = useAppStore(s => s.clearAISuggestions);
+  const setPendingEditorInsert = useAppStore(s => s.setPendingEditorInsert);
   const aiSettings = useAppStore(s => s.aiSettings);
   const updateAISettings = useAppStore(s => s.updateAISettings);
 
@@ -249,7 +250,7 @@ export default function AIPanel() {
     if (!currentChapterId || !currentChapter) return;
     const cleanContent = DOMPurify.sanitize(content.replace(/<p class="text-ink-500[\s\S]*?<\/p>|<ul class="text-ink-400[\s\S]*?<\/ul>/g, ''));
     // 通过 pendingEditorInsert 以“末尾追加”模式经编辑器执行，避免读取防抖期内的陈旧 store 内容
-    useAppStore.getState().setPendingEditorInsert({ chapterId: currentChapterId, content: cleanContent, mode: 'end' });
+    setPendingEditorInsert({ chapterId: currentChapterId, content: cleanContent, mode: 'end' });
     clearAISuggestions();
   };
 
@@ -257,7 +258,7 @@ export default function AIPanel() {
     if (!currentChapterId || !currentChapter) return;
     const cleanContent = DOMPurify.sanitize(content.replace(/<p class="text-ink-500[\s\S]*?<\/p>|<ul class="text-ink-400[\s\S]*?<\/ul>/g, ''));
     // 通过 store 传递插入请求，TiptapEditor 监听后在光标位置执行插入
-    useAppStore.getState().setPendingEditorInsert({ chapterId: currentChapterId, content: cleanContent, mode: 'cursor' });
+    setPendingEditorInsert({ chapterId: currentChapterId, content: cleanContent, mode: 'cursor' });
     clearAISuggestions();
   };
 

@@ -13,9 +13,9 @@ import { storage, generateId, countWords, markDirty } from '@/utils/storage';
 import { SEARCH_DEBOUNCE_DELAY, CHAPTER_MAX_LEVEL } from '@/constants/config';
 
 type ChapterSlice = Pick<AppState,
-  | 'chapters' | 'currentChapterId' | 'pendingEditorInsert' | 'contentEpoch' | 'isAIGenerating'
+  | 'chapters' | 'currentChapterId' | 'pendingEditorInsert' | 'pendingScrollTo' | 'contentEpoch' | 'isAIGenerating'
   | 'addChapter' | 'updateChapter' | 'deleteChapter' | 'moveChapter' | 'setCurrentChapter'
-  | 'updateChapterContent' | 'setPendingEditorInsert' | 'bumpContentEpoch' | 'setAIGenerating'>;
+  | 'updateChapterContent' | 'setPendingEditorInsert' | 'setPendingScrollTo' | 'bumpContentEpoch' | 'setAIGenerating'>;
 
 // 伏笔提及计数重算防抖计时器（避免每次按键都全量扫描章节）
 let foreshadowRecomputeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -24,6 +24,7 @@ export const createChapterSlice: StateCreator<AppState, [], [], ChapterSlice> = 
   chapters: [],
   currentChapterId: null,
   pendingEditorInsert: null,
+  pendingScrollTo: null,
   contentEpoch: 0,
   isAIGenerating: false,
 
@@ -236,6 +237,10 @@ export const createChapterSlice: StateCreator<AppState, [], [], ChapterSlice> = 
 
   setPendingEditorInsert: (content) => {
     set({ pendingEditorInsert: content });
+  },
+
+  setPendingScrollTo: (payload) => {
+    set({ pendingScrollTo: payload });
   },
 
   bumpContentEpoch: () => {

@@ -33,6 +33,24 @@ export interface RecoveryDraft {
   timestamp: string;
 }
 
+/**
+ * 编辑器待跳转定位请求。
+ * - chapterId: 目标章节
+ * - position: 纯文本字符偏移（基于剥离 HTML 后的正文），可选；无则仅切换章节
+ * - timestamp: 创建时间戳，用于 TiptapEditor 区分连续多次跳转请求
+ *
+ * 使用场景：冲突检测面板的"跳转到正文"按钮。ConflictPanel 与 TiptapEditor 是兄弟组件，
+ * 通过 store 中转避免 props 钻孔。TiptapEditor 监听此字段变化执行跳转，完成后置空。
+ */
+export interface PendingScrollTo {
+  chapterId: string;
+  /** 纯文本偏移定位（冲突检测用） */
+  position?: { start: number; end: number };
+  /** 块文本匹配定位（版本 diff 用）：编辑器查找首个文本包含该值的段落并滚动高亮 */
+  blockText?: string;
+  timestamp: number;
+}
+
 export const DEFAULT_AI_SETTINGS: AISettings = {
   provider: 'mock',
   style: 'balanced',
@@ -67,6 +85,7 @@ export interface AppState {
   chapters: Chapter[];
   currentChapterId: string | null;
   pendingEditorInsert: PendingEditorInsert | null;
+  pendingScrollTo: PendingScrollTo | null;
   contentEpoch: number;
   isAIGenerating: boolean;
 
@@ -78,6 +97,7 @@ export interface AppState {
   setCurrentChapter: (chapterId: string | null) => void;
   updateChapterContent: (chapterId: string, content: string) => void;
   setPendingEditorInsert: (content: PendingEditorInsert | null) => void;
+  setPendingScrollTo: (payload: PendingScrollTo | null) => void;
   bumpContentEpoch: () => void;
   setAIGenerating: (v: boolean) => void;
 

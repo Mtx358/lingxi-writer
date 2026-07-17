@@ -11,7 +11,17 @@ export interface ExportData {
   includeToc: boolean;
   style: 'novel' | 'article' | 'script';
   platform?: 'general' | 'qidian' | 'fanqie' | 'wechat';
+  /**
+   * 导出进度回调（可选）。导出器在章节循环与打包阶段调用，供调用方推进真实进度条。
+   * - current/total：章节级粒度（generating 阶段）
+   * - stage：preparing（初始化）/ generating（章节循环）/ packing（PDF/DOCX 打包序列化）/ saving（写入磁盘）
+   * 调用方据此计算百分比：generating 阶段 current/total 映射到 20%-80%，
+   * packing 阶段映射到 80%-95%，saving 由调用方自行设置。
+   */
+  onProgress?: (info: { current: number; total: number; stage: ExportProgressStage }) => void;
 }
+
+export type ExportProgressStage = 'preparing' | 'generating' | 'packing' | 'saving';
 
 export interface PlatformConfig {
   indentSize: number;
@@ -159,10 +169,11 @@ function toBase64(data: ArrayBuffer | Uint8Array): string {
  * 使用 Packer.toBase64String 直接得到 base64，兼容浏览器与 Electron 渲染进程（无需 Node Buffer）。
  */
 export async function generateDocx(data: ExportData): Promise<string> {
-  const { project, chapters, includeToc, platform } = data;
+  const { project, chapters, includeToc, platform, onProgress } = data;
   const config = getPlatformConfig(platform);
 
   const children: Paragraph[] = [];
+  onProgress?.({ current: 0, total: chapters.length, stage: 'preparing' });
 
   if (config.frontMatter) {
     children.push(
@@ -228,6 +239,8 @@ export async function generateDocx(data: ExportData): Promise<string> {
       await Promise.resolve();
     }
     const ch = chapters[idx];
+    // 上报真实进度：每章生成后通知调用方
+    onProgress?.({ current: idx + 1, total: chapters.length, stage: 'generating' });
     const title = config.includeChapterNumber ? `${idx + 1}. ${ch.title}` : ch.title;
     children.push(
       new Paragraph({
@@ -279,6 +292,8 @@ export async function generateDocx(data: ExportData): Promise<string> {
     ],
   });
 
+  // 打包序列化是重计算（可能秒级），上报 packing 阶段
+  onProgress?.({ current: chapters.length, total: chapters.length, stage: 'packing' });
   return Packer.toBase64String(doc);
 }
 
@@ -437,8 +452,9 @@ export interface PdfExportResult {
  * 使用 pdf-lib 库，支持中文（尝试加载 Noto Sans SC 字体）。
  */
 export async function generatePdf(data: ExportData): Promise<PdfExportResult> {
-  const { project, chapters, includeToc } = data;
+  const { project, chapters, includeToc, onProgress } = data;
 
+  onProgress?.({ current: 0, total: chapters.length, stage: 'preparing' });
   const pdfDoc = await PDFDocument.create();
   const pageWidth = 595.28;
   const pageHeight = 841.89;
@@ -532,6 +548,7 @@ export async function generatePdf(data: ExportData): Promise<PdfExportResult> {
       await Promise.resolve();
     }
     const ch = chapters[chapterIdx];
+    onProgress?.({ current: chapterIdx + 1, total: chapters.length, stage: 'generating' });
     currentPage = pdfDoc.addPage();
     y = pageHeight - margin;
     drawTextOnPage(ch.title, 16, { bold: true, align: 'center', gapAfter: 10 });
@@ -544,6 +561,8 @@ export async function generatePdf(data: ExportData): Promise<PdfExportResult> {
     });
   }
 
+  // PDF 序列化是重计算，上报 packing 阶段
+  onProgress?.({ current: chapters.length, total: chapters.length, stage: 'packing' });
   const pdfBytes = await pdfDoc.save();
   return { base64: toBase64(pdfBytes), chineseFontLoaded };
 }
@@ -680,8 +699,9 @@ export function generateHtml(data: ExportData): string {
 }
 
 export async function generateEpub(data: ExportData): Promise<string> {
-  const { project, chapters } = data;
+  const { project, chapters, onProgress } = data;
 
+  onProgress?.({ current: 0, total: chapters.length, stage: 'preparing' });
   const zip = new JSZip();
   const bookId = `urn:uuid:${project.id || Date.now().toString(36)}`;
   const title = escapeXml(project.title || '未命名作品');
@@ -764,6 +784,7 @@ ${navPoints}
       await Promise.resolve();
     }
     const ch = chapters[idx];
+    onProgress?.({ current: idx + 1, total: chapters.length, stage: 'generating' });
     const paragraphs = htmlToParagraphs(ch.content);
     const bodyParts: string[] = [];
     bodyParts.push(`    <h1>${escapeXml(ch.title)}</h1>`);
@@ -802,5 +823,7 @@ p.summary { text-indent: 0; color: #888; font-style: italic; text-align: center;
 `;
   zip.file('OEBPS/style.css', styleCss);
 
+  // zip 打包序列化是重计算，上报 packing 阶段
+  onProgress?.({ current: chapters.length, total: chapters.length, stage: 'packing' });
   return zip.generateAsync({ type: 'base64', mimeType: 'application/epub+zip' });
 }

@@ -115,6 +115,27 @@ export default function ExportPage() {
     setExportProgress(prev => Math.max(prev, stage === 'preparing' ? 5 : stage === 'generating' ? 20 : 85));
   };
 
+  // 真实进度回调：将导出器上报的章节级粒度映射到 20%-80% 区间
+  // packing 阶段（PDF/DOCX 序列化）映射到 80%-95%
+  // 主进度来自回调；下方心跳定时器仅作为「保活」，防止 packing 阶段无反馈时进度条停滞
+  const makeProgressHandler = (total: number) => {
+    return (info: { current: number; total: number; stage: 'preparing' | 'generating' | 'packing' | 'saving' }) => {
+      if (info.stage === 'preparing') {
+        setExportStage('preparing');
+        setExportProgress(prev => Math.max(prev, 5));
+      } else if (info.stage === 'generating') {
+        setExportStage('generating');
+        const ratio = info.total > 0 ? info.current / info.total : 0;
+        // generating 阶段映射到 20%-80%
+        setExportProgress(prev => Math.max(prev, Math.min(80, 20 + Math.round(ratio * 60))));
+      } else if (info.stage === 'packing') {
+        setExportStage('generating');
+        setExportProgress(prev => Math.max(prev, 88));
+      }
+      void total; // total 参数保留以备未来按章节总数预估
+    };
+  };
+
   const handleExport = async () => {
     if (!project) return;
     // 新导出启动时清除上一次导出的重置定时器，避免与新导出状态冲突
@@ -127,15 +148,15 @@ export default function ExportPage() {
     setExportMessage(null);
     setExportProgress(0);
 
-    // 进度推进定时器：生成期间每 300ms 推进 5-8%，封顶 90%（避免虚假 100%）
-    // 导出生成器已通过分块 yield（每 N 章让出事件循环）保证此定时器可正常触发，
-    // 进度条会平滑推进；此处仅为可感知反馈，不代表精确比例
+    // 心跳定时器：仅作为「保活」——packing 阶段（PDF/DOCX 序列化）无章节级回调，
+    // 主进度由 makeProgressHandler 推进；此定时器在主进度未达 88% 时缓慢向上推，
+    // 防止打包阶段卡住不动让用户误以为崩溃。主进度已达 88% 后不再干预（让真实回调接管）。
     progressTimerRef.current = setInterval(() => {
       setExportProgress(prev => {
-        if (prev >= 90) return prev;
-        return Math.min(90, prev + Math.max(1, Math.round((90 - prev) * 0.08)));
+        if (prev >= 88) return prev;
+        return Math.min(88, prev + 1);
       });
-    }, 300);
+    }, 800);
 
     try {
       // markdown / txt：保持原 Blob 下载逻辑
@@ -160,12 +181,14 @@ export default function ExportPage() {
         // 动态加载导出器模块，使 docx/pdf-lib/jszip 等 968KB 重型依赖仅在真正导出时加载
         startProgress('preparing');
         const { generateDocx, generatePdf, generateEpub } = await import('@/utils/exporters');
+        const onProgress = makeProgressHandler(mainChapters.length);
         const exportData: ExportData = {
           project,
           chapters: mainChapters,
           includeToc,
           style,
           platform,
+          onProgress,
         };
 
         let base64: string;

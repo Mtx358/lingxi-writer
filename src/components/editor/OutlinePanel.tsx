@@ -331,7 +331,16 @@ function ChapterNodeComponent({
       </div>
 
       {hasChildren && expanded && (
-        <div>
+        // content-visibility: auto 让浏览器跳过离屏子树的渲染与布局，
+        // 显著降低 100+ 章展开时的绘制与 reflow 成本；containIntrinsicSize
+        // 提供占位高度避免滚动条抖动，'auto' 前缀会记住上次实际尺寸以减少回跳。
+        // 仅作用于子树容器，行本身始终渲染以保证 dnd-kit 拖拽测量准确。
+        <div
+          style={{
+            contentVisibility: 'auto',
+            containIntrinsicSize: 'auto 40px',
+          }}
+        >
           {children.map(child => (
             <ChapterNode
               key={child.id}

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { History, Save, Clock, RotateCcw, X, Check, ChevronRight, FileText, Trash2, Loader2 } from 'lucide-react';
+import { History, Save, Clock, RotateCcw, X, Check, ChevronRight, FileText, Trash2, Loader2, MapPin } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import type { ChapterVersion } from '@/types';
 import { formatDate } from '@/utils/storage';
@@ -19,6 +19,7 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
   const updateChapterContent = useAppStore(s => s.updateChapterContent);
   const bumpContentEpoch = useAppStore(s => s.bumpContentEpoch);
   const deleteVersion = useAppStore(s => s.deleteVersion);
+  const setPendingScrollTo = useAppStore(s => s.setPendingScrollTo);
   const [selectedVersion, setSelectedVersion] = useState<ChapterVersion | null>(null);
   // 统一使用 HTML 块级 diff 作为单一数据源，消除行级/块级双轨索引映射
   const [htmlDiffResult, setHtmlDiffResult] = useState<HtmlBlockDiff[]>([]);
@@ -113,6 +114,17 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
     if (confirm('确定删除此历史版本吗？')) {
       deleteVersion(currentChapterId, versionId);
     }
+  };
+
+  // 在编辑器中定位当前版本的某个 diff 块：通过 blockText 让 TiptapEditor
+  // 查找首个文本包含该片段的段落并滚动高亮。仅对当前版本存在的块有效。
+  const handleLocateInEditor = (block: HtmlBlockDiff) => {
+    if (!currentChapterId || !block.rightBlock?.textContent) return;
+    setPendingScrollTo({
+      chapterId: currentChapterId,
+      blockText: block.rightBlock.textContent,
+      timestamp: Date.now(),
+    });
   };
 
   const handleApplyChanges = () => {
@@ -469,6 +481,17 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
                           title={rejectedBlocks.has(idx) ? '取消撤销' : '撤销此段落（回退到旧版本）'}
                         >
                           <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    )}
+                    {block.rightBlock && (
+                      <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center pr-1">
+                        <button
+                          onClick={() => handleLocateInEditor(block)}
+                          className="p-0.5 rounded text-ink-500 hover:text-amber-400 hover:bg-ink-700"
+                          title="在编辑器中定位此段落"
+                        >
+                          <MapPin className="w-3 h-3" />
                         </button>
                       </div>
                     )}

@@ -302,6 +302,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       searchQuery: '',
       searchResults: [],
       analysis: {},
+      // 清空待跳转请求，避免关闭项目后 TiptapEditor 仍尝试滚动到已不存在的章节
+      pendingScrollTo: null,
     });
   },
 

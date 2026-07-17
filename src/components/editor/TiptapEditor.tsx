@@ -30,6 +30,9 @@ export default function TiptapEditor() {
   const addForeshadow = useAppStore(s => s.addForeshadow);
   const pendingEditorInsert = useAppStore(s => s.pendingEditorInsert);
   const setPendingEditorInsert = useAppStore(s => s.setPendingEditorInsert);
+  const pendingScrollTo = useAppStore(s => s.pendingScrollTo);
+  const setPendingScrollTo = useAppStore(s => s.setPendingScrollTo);
+  const setCurrentChapter = useAppStore(s => s.setCurrentChapter);
   const contentEpoch = useAppStore(s => s.contentEpoch);
   const setAIGenerating = useAppStore(s => s.setAIGenerating);
   const [showContextMenu, setShowContextMenu] = useState(false);
@@ -228,6 +231,89 @@ export default function TiptapEditor() {
     }
     setPendingEditorInsert(null);
   }, [editor, pendingEditorInsert, setPendingEditorInsert, currentChapterId]);
+
+  // 监听冲突检测/版本 diff 等场景发出的"跳转到正文位置"请求。
+  // - chapterId === currentChapterId：当前章节，直接滚动
+  // - 否则：先 setCurrentChapter 触发章节加载，再延迟执行滚动（等待章节切换 effect 完成 setContent）
+  // position 是基于剥离 HTML 后的纯文本偏移，需遍历 ProseMirror 文档节点累计文本长度来定位。
+  // blockText 是版本 diff 块的文本，编辑器查找首个文本包含该值的块级节点并滚动高亮。
+  useEffect(() => {
+    if (!editor || !pendingScrollTo) return;
+    const { chapterId, position, blockText } = pendingScrollTo;
+    // 复制并立即清空 store，避免重复触发
+    const targetPos = position;
+    const targetBlockText = blockText;
+    setPendingScrollTo(null);
+
+    const doScroll = () => {
+      if (!editor) return;
+      let pmPos = -1;
+      let endPm = -1;
+
+      if (targetPos) {
+        // 偏移模式：将纯文本偏移转换为 ProseMirror 文档位置
+        let acc = 0;
+        editor.state.doc.descendants((node, pos) => {
+          if (pmPos !== -1) return false;
+          if (node.isText && node.text) {
+            const len = node.text.length;
+            if (acc + len >= targetPos.start) {
+              pmPos = pos + (targetPos.start - acc);
+              return false;
+            }
+            acc += len;
+          }
+          return true;
+        });
+        if (pmPos === -1) {
+          pmPos = Math.max(0, editor.state.doc.content.size - 1);
+        }
+        endPm = Math.min(pmPos + (targetPos.end - targetPos.start), editor.state.doc.content.size - 1);
+      } else if (targetBlockText) {
+        // 块文本匹配模式：查找首个文本包含目标片段的块级节点，选中整个块
+        const needle = targetBlockText.trim();
+        editor.state.doc.descendants((node, pos) => {
+          if (pmPos !== -1) return false;
+          if (node.isBlock && node.textContent && node.textContent.includes(needle)) {
+            pmPos = pos;
+            endPm = pos + node.nodeSize;
+            return false;
+          }
+          return true;
+        });
+        if (pmPos === -1) {
+          // 未匹配到，回退到文档末尾
+          pmPos = Math.max(0, editor.state.doc.content.size - 1);
+          endPm = pmPos;
+        }
+      } else {
+        // 无定位信息仅切换章节
+        return;
+      }
+
+      // setTextSelection + scrollIntoView 让编辑器滚动到目标位置并高亮光标
+      editor.chain().focus().setTextSelection(pmPos).scrollIntoView().run();
+      // 短暂高亮提示：临时加 Highlight，2 秒后移除
+      try {
+        editor.chain().setTextSelection({ from: pmPos, to: endPm }).toggleHighlight().run();
+        setTimeout(() => {
+          if (editor && !editor.isDestroyed) {
+            editor.chain().setTextSelection({ from: pmPos, to: endPm }).toggleHighlight().run();
+          }
+        }, 2000);
+      } catch { /* 高亮失败不影响跳转 */ }
+    };
+
+    if (chapterId === currentChapterId) {
+      doScroll();
+    } else {
+      // 切换章节：setCurrentChapter 会触发章节切换 effect 执行 setContent，
+      // 这里延迟到 EDITOR_SWITCH_DELAY 之后再执行滚动，确保编辑器内容已就绪
+      setCurrentChapter(chapterId);
+      const timer = setTimeout(doScroll, EDITOR_SWITCH_DELAY + 50);
+      return () => clearTimeout(timer);
+    }
+  }, [editor, pendingScrollTo, currentChapterId, setPendingScrollTo, setCurrentChapter]);
 
   // 点击外部关闭提及面板：复用 useClickOutside，仅在 showMentionPanel 为 true 时挂载监听器
   useClickOutside(editorContainerRef, () => setShowMentionPanel(false), showMentionPanel);

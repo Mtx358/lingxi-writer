@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { AlertTriangle, CheckCircle, X, ChevronRight, Info, AlertCircle, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle, X, ChevronRight, Info, AlertCircle, XCircle, Locate } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { conflictDetector } from '@/utils/conflictDetector';
 import type { ConflictIssue } from '@/types';
@@ -29,10 +29,22 @@ export default function ConflictPanel({ onClose }: ConflictPanelProps) {
   const detectConflicts = useAppStore(s => s.detectConflicts);
   const resolveConflict = useAppStore(s => s.resolveConflict);
   const addAISuggestion = useAppStore(s => s.addAISuggestion);
+  const setPendingScrollTo = useAppStore(s => s.setPendingScrollTo);
   const [scanning, setScanning] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const currentChapter = chapters.find(c => c.id === currentChapterId);
+
+  // 跳转到冲突位置：切换章节并请求编辑器滚动到 position 处
+  // 无 position 的 issue 仅切换章节
+  const handleLocate = (issue: ConflictIssue) => {
+    if (!issue.chapterId) return;
+    setPendingScrollTo({
+      chapterId: issue.chapterId,
+      position: issue.position,
+      timestamp: Date.now(),
+    });
+  };
 
   // mountedRef 守卫：两个 scan 函数都有 setTimeout 假扫描延迟，
   // 组件卸载后回调不应再 setState，避免内存泄漏与 React 警告。
@@ -241,10 +253,19 @@ export default function ConflictPanel({ onClose }: ConflictPanelProps) {
                       </div>
                       <div className="flex gap-1.5">
                         <button
+                          onClick={(e) => { e.stopPropagation(); handleLocate(issue); }}
+                          disabled={!chapter}
+                          className="flex-1 py-1 text-[10px] bg-blue-400/10 text-blue-300 hover:bg-blue-400/20 rounded flex items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={chapter ? '切换到该章节并定位到冲突位置' : '章节不存在'}
+                        >
+                          <Locate className="w-3 h-3" />
+                          {issue.position ? '定位' : '跳转章节'}
+                        </button>
+                        <button
                           onClick={(e) => { e.stopPropagation(); handleFix(issue); }}
                           className="flex-1 py-1 text-[10px] bg-amber-400/10 text-amber-300 hover:bg-amber-400/20 rounded flex items-center justify-center gap-1"
                         >
-                          查看修复建议模板
+                          修复模板
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); handleResolve(issue.id); }}
