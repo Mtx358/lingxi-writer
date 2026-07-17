@@ -1,5 +1,6 @@
 import JSZip from 'jszip';
 import type { Project, Chapter, Character, SettingCategory, SettingItem, Foreshadow, Material, ChapterVersion } from '@/types';
+import { levelToLevelType, DEFAULT_CHAPTER_STATUS } from '@/types';
 import { encodeVersionsToDeltas, decodeDeltasToVersions } from '@/utils/versionDelta';
 
 export interface ProjectFileContent {
@@ -21,6 +22,38 @@ export interface ProjectFileMetadata {
 }
 
 const FILE_VERSION = '1.0.0';
+
+// 解析 semver 字符串为 [major, minor, patch]，无法解析时返回 null
+const parseSemver = (v: string | undefined | null): [number, number, number] | null => {
+  if (!v) return null;
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
+  if (!m) return null;
+  return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+};
+
+// 主版本相同即视为兼容（兼容旧 1.x 文件，避免硬编码版本号导致无法读取）
+const isCompatibleVersion = (fileVersion: string | undefined): boolean => {
+  const fileSem = parseSemver(fileVersion);
+  const appSem = parseSemver(FILE_VERSION);
+  if (!fileSem || !appSem) return false;
+  return fileSem[0] === appSem[0];
+};
+
+// 对老版本文件中缺失的字段补默认值，避免下游代码因 undefined 崩溃
+const normalizeChapter = (c: Partial<Chapter>): Chapter => ({
+  ...c,
+  title: c.title ?? '',
+  parentId: c.parentId ?? null,
+  summary: c.summary ?? '',
+  order: c.order ?? 0,
+  level: c.level ?? 1,
+  levelType: c.levelType ?? levelToLevelType(c.level ?? 1),
+  status: c.status ?? DEFAULT_CHAPTER_STATUS,
+  wordCount: c.wordCount ?? 0,
+  content: c.content ?? '',
+  createdAt: c.createdAt ?? new Date(0).toISOString(),
+  updatedAt: c.updatedAt ?? new Date(0).toISOString(),
+}) as Chapter;
 
 export async function createProjectFile(project: Project, chapters: Chapter[], characters: Character[], settingCategories: SettingCategory[], settingItems: SettingItem[], foreshadows: Foreshadow[], materials: Material[], versions: Record<string, ChapterVersion[]>): Promise<Buffer> {
   const zip = new JSZip();
@@ -55,38 +88,47 @@ export async function createProjectFile(project: Project, chapters: Chapter[], c
 
 export async function readProjectFile(buffer: Buffer): Promise<ProjectFileContent> {
   const zip = await JSZip.loadAsync(buffer);
-  
+
   const metadata = await readJsonFile<ProjectFileMetadata>(zip, 'metadata.json');
-  if (!metadata || metadata.version !== FILE_VERSION) {
+  if (!metadata || !isCompatibleVersion(metadata.version)) {
     throw new Error('不兼容的工程文件版本');
   }
-  
+
   const projectData = await readJsonFile<Project>(zip, 'project.json');
   if (!projectData) {
     throw new Error('缺少项目信息');
   }
-  
-  const chapters = await readJsonFile<Chapter[]>(zip, 'chapters.json') || [];
+
+  const rawChapters = await readJsonFile<Partial<Chapter>[]>(zip, 'chapters.json') || [];
+  // 对老版本文件缺失的字段补默认值（levelType/status/content 等）
+  const chapters = rawChapters.map(normalizeChapter);
   const characters = await readJsonFile<Character[]>(zip, 'characters.json') || [];
   const settingCategories = await readJsonFile<SettingCategory[]>(zip, 'settingCategories.json') || [];
   const settingItems = await readJsonFile<SettingItem[]>(zip, 'settingItems.json') || [];
   const foreshadows = await readJsonFile<Foreshadow[]>(zip, 'foreshadows.json') || [];
   const materials = await readJsonFile<Material[]>(zip, 'materials.json') || [];
-  
-  const versions: Record<string, ChapterVersion[]> = {};
-  const versionsFolder = zip.folder('versions');
-  if (versionsFolder) {
-    const files = Object.keys(versionsFolder.files);
-    for (const file of files) {
-      if (file.endsWith('.json')) {
-        const chapterId = file.slice(0, -5);
-        // 读取增量 Diff 存储的版本，链式重建出完整内容
-        const stored = await readJsonFile<ReturnType<typeof encodeVersionsToDeltas>>(versionsFolder!, file) || [];
-        versions[chapterId] = decodeDeltasToVersions(stored);
-      }
+
+  // 校验和仅做弱校验：不一致时 warning 提示，不阻塞读取（避免弱哈希误报误导用户）
+  if (metadata.checksum) {
+    const currentChecksum = generateChecksum(projectData, chapters);
+    if (currentChecksum !== metadata.checksum) {
+      console.warn('项目文件校验和不一致，可能已损坏或被外部修改：存储值', metadata.checksum, '实际值', currentChecksum);
     }
   }
-  
+
+  const versions: Record<string, ChapterVersion[]> = {};
+  // 直接从根 zip 按完整路径读取，过滤 versions/*.json。
+  // 原实现用 zip.folder('versions').files 会返回整个 zip 的所有文件，
+  // 且 versionsFolder.file(file) 会拼成 versions/versions/chapterId.json 导致找不到。
+  const allFiles = Object.keys(zip.files);
+  for (const f of allFiles) {
+    if (f.startsWith('versions/') && f.endsWith('.json')) {
+      const chapterId = f.slice('versions/'.length, -5);
+      const stored = await readJsonFile<ReturnType<typeof encodeVersionsToDeltas>>(zip, f) || [];
+      versions[chapterId] = decodeDeltasToVersions(stored);
+    }
+  }
+
   return {
     project: projectData,
     chapters,

@@ -42,6 +42,37 @@ const getSearchWorker = (): Worker | null => {
   }
 };
 
+// 关闭项目时终止搜索 Worker 并清空状态，释放子线程资源、防止监听器泄漏。
+// 需在 closeProject 中调用（projectSlice 不在本任务范围，故在此导出供其调用）。
+export const disposeSearchWorker = (): void => {
+  if (searchWorker) {
+    try {
+      searchWorker.terminate();
+    } catch {
+      // ignore terminate errors
+    }
+    searchWorker = null;
+  }
+  searchRequestId = 0;
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = null;
+  }
+};
+
+// 模块级缓存：characterId -> { profileRef, text }，避免每次搜索都对每个角色 JSON.stringify(profile)。
+// character 增删改后 profile 引用变化，缓存自动失效（引用比较），无需跨 slice 主动更新。
+const profileSearchCache = new Map<string, { profileRef: unknown; text: string }>();
+const getProfileSearchText = (characterId: string, profile: unknown): string => {
+  const cached = profileSearchCache.get(characterId);
+  if (cached && cached.profileRef === profile) {
+    return cached.text;
+  }
+  const text = JSON.stringify(profile).toLowerCase();
+  profileSearchCache.set(characterId, { profileRef: profile, text });
+  return text;
+};
+
 export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get) => ({
   leftPanelCollapsed: false,
   rightPanelCollapsed: false,
@@ -78,16 +109,22 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
       // Worker 可用：异步搜索，不阻塞主线程
       if (worker) {
         const onMessage = (e: MessageEvent) => {
-          if (currentRequestId !== searchRequestId) return; // 过期结果，丢弃
+          // 无论 requestId 是否匹配都移除自身监听器，避免 Worker 异常或过期消息导致监听器累积泄漏
           worker.removeEventListener('message', onMessage);
+          if (currentRequestId !== searchRequestId) return; // 过期结果，丢弃
           set({ searchResults: e.data });
         };
         worker.addEventListener('message', onMessage);
-        worker.postMessage({ query, chapters, characters, settingItems, foreshadows, materials });
-        return;
+        try {
+          worker.postMessage({ query, chapters, characters, settingItems, foreshadows, materials });
+          return; // 异步等待 Worker 响应
+        } catch {
+          // postMessage 失败：移除监听器并降级到下方主线程同步搜索
+          worker.removeEventListener('message', onMessage);
+        }
       }
 
-      // Worker 不可用：降级到主线程同步搜索
+      // Worker 不可用或 postMessage 失败：降级到主线程同步搜索
       const results: SearchEntry[] = [];
       const lowerQuery = query.toLowerCase();
       // 转义元字符，防止 ( [ * 等触发 SyntaxError
@@ -109,7 +146,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
 
       characters.forEach(c => {
         const nameMatches = (c.name.toLowerCase().match(safePattern) || []).length;
-        const profileStr = JSON.stringify(c.profile).toLowerCase();
+        const profileStr = getProfileSearchText(c.id, c.profile);
         const profileMatches = (profileStr.match(safePattern) || []).length;
         const totalMatches = nameMatches * 5 + profileMatches;
         if (totalMatches > 0) {
@@ -166,8 +203,8 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
     conflictDetector.setSettings(settingItems);
 
     const issues: ConflictIssue[] = [];
-    // 扫描所有正文章节（level===2 且有内容）
-    const mainChapters = chapters.filter(c => c.level === 2 && c.content && c.content.length > 0);
+    // 扫描所有正文章节（levelType === 'chapter' 且有内容），与 entitySlice 的判定保持一致
+    const mainChapters = chapters.filter(c => c.levelType === 'chapter' && c.content && c.content.length > 0);
     mainChapters.forEach(ch => {
       issues.push(...conflictDetector.detectChapterConflicts(ch));
     });

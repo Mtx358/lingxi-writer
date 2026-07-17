@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, FolderOpen, Sparkles, BookOpen, Layers, Map, Trash2, Clock, FileText, Upload } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
@@ -7,6 +7,23 @@ import { formatDate } from '@/utils/storage';
 import type { Project } from '@/types';
 import ImportModal from '@/components/ImportModal';
 import OnboardingGuide from '@/components/OnboardingGuide';
+
+// localStorage 在隐私模式/禁用存储时可能抛错，统一 try/catch 容错
+function safeLocalStorageGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeLocalStorageSet(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* 忽略存储不可用 */
+  }
+}
 
 export default function Home() {
   const navigate = useNavigate();
@@ -20,21 +37,19 @@ export default function Home() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [newProjectTitle, setNewProjectTitle] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState<Project['template']>('blank');
+  // 创建中标记：防止重复点击触发多次 createProject+navigate
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
-    const hasSeenGuide = localStorage.getItem('has_seen_onboarding');
+    const hasSeenGuide = safeLocalStorageGet('has_seen_onboarding');
     if (!hasSeenGuide) {
       setShowOnboarding(true);
     }
   }, []);
 
-  const handleOnboardingComplete = () => {
-    localStorage.setItem('has_seen_onboarding', 'true');
-    setShowOnboarding(false);
-  };
-
-  const handleOnboardingSkip = () => {
-    localStorage.setItem('has_seen_onboarding', 'true');
+  // 完成/跳过引导处理一致，合并为单一 handler 避免重复代码
+  const handleOnboardingClose = () => {
+    safeLocalStorageSet('has_seen_onboarding', 'true');
     setShowOnboarding(false);
   };
 
@@ -43,11 +58,17 @@ export default function Home() {
   }, [loadProjects]);
 
   const handleCreateProject = async () => {
+    if (creating) return;
     if (!newProjectTitle.trim()) return;
-    const project = createProject(newProjectTitle, selectedTemplate);
-    // 确保项目数据已写入存储后再导航
-    await useAppStore.getState().openProject(project.id);
-    navigate(`/project/${project.id}/editor`);
+    setCreating(true);
+    try {
+      const project = createProject(newProjectTitle, selectedTemplate);
+      // 确保项目数据已写入存储后再导航
+      await useAppStore.getState().openProject(project.id);
+      navigate(`/project/${project.id}/editor`);
+    } finally {
+      setCreating(false);
+    }
   };
 
   const handleOpenProject = (projectId: string) => {
@@ -58,11 +79,16 @@ export default function Home() {
     loadSampleProject();
     const state = useAppStore.getState();
     const newProject = state.projects[state.projects.length - 1];
+    // loadSampleProject 同步写入；若异常未写入则中止跳转，避免导航到不存在的项目
+    if (!newProject) return;
     navigate(`/project/${newProject.id}/editor`);
   };
 
-  const sortedProjects = [...projects].sort((a, b) =>
-    new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime()
+  const sortedProjects = useMemo(
+    () => [...projects].sort((a, b) =>
+      new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime()
+    ),
+    [projects]
   );
 
   return (
@@ -150,6 +176,7 @@ export default function Home() {
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
+                            // 暂用浏览器原生 confirm 对话框（项目暂无统一确认组件）
                             if (confirm('确定要删除这个项目吗？')) {
                               deleteProject(project.id);
                             }
@@ -263,11 +290,11 @@ export default function Home() {
               </button>
               <button
                 onClick={handleCreateProject}
-                disabled={!newProjectTitle.trim()}
+                disabled={creating || !newProjectTitle.trim()}
                 className="btn btn-primary flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <FolderOpen className="w-4 h-4" />
-                创建
+                {creating ? '创建中...' : '创建'}
               </button>
             </div>
           </div>
@@ -278,8 +305,8 @@ export default function Home() {
 
       {showOnboarding && (
         <OnboardingGuide
-          onComplete={handleOnboardingComplete}
-          onSkip={handleOnboardingSkip}
+          onComplete={handleOnboardingClose}
+          onSkip={handleOnboardingClose}
         />
       )}
     </div>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Sparkles, ChevronRight, X, Check, AlertTriangle } from 'lucide-react';
 
 interface GuideStep {
@@ -38,6 +38,14 @@ const GUIDE_STEPS: GuideStep[] = [
 export default function OnboardingGuide({ onComplete, onSkip }: OnboardingGuideProps) {
   const [currentStep, setCurrentStep] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
+  // 动画定时器：卸载时清理，避免卸载后 setState
+  const animTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (animTimerRef.current) clearTimeout(animTimerRef.current);
+    };
+  }, []);
 
   const step = GUIDE_STEPS[currentStep];
   const isLast = currentStep === GUIDE_STEPS.length - 1;
@@ -49,8 +57,10 @@ export default function OnboardingGuide({ onComplete, onSkip }: OnboardingGuideP
       onComplete();
       return;
     }
+    if (isAnimating) return;
     setIsAnimating(true);
-    setTimeout(() => {
+    if (animTimerRef.current) clearTimeout(animTimerRef.current);
+    animTimerRef.current = setTimeout(() => {
       setCurrentStep(prev => prev + 1);
       setIsAnimating(false);
     }, 150);
@@ -58,8 +68,10 @@ export default function OnboardingGuide({ onComplete, onSkip }: OnboardingGuideP
 
   const handlePrev = () => {
     if (isFirst) return;
+    if (isAnimating) return;
     setIsAnimating(true);
-    setTimeout(() => {
+    if (animTimerRef.current) clearTimeout(animTimerRef.current);
+    animTimerRef.current = setTimeout(() => {
       setCurrentStep(prev => prev - 1);
       setIsAnimating(false);
     }, 150);
@@ -113,11 +125,7 @@ export default function OnboardingGuide({ onComplete, onSkip }: OnboardingGuideP
                 <div
                   key={s.id}
                   className={`h-1.5 rounded-full transition-all duration-300 ${
-                    idx < currentStep
-                      ? 'w-6 bg-amber-400'
-                      : idx === currentStep
-                      ? 'w-6 bg-amber-400'
-                      : 'w-1.5 bg-ink-700'
+                    idx <= currentStep ? 'w-6 bg-amber-400' : 'w-1.5 bg-ink-700'
                   }`}
                 />
               ))}
@@ -129,6 +137,7 @@ export default function OnboardingGuide({ onComplete, onSkip }: OnboardingGuideP
             {!isFirst && (
               <button
                 onClick={handlePrev}
+                disabled={isAnimating}
                 className="btn btn-secondary flex-1"
               >
                 上一步
@@ -136,6 +145,7 @@ export default function OnboardingGuide({ onComplete, onSkip }: OnboardingGuideP
             )}
             <button
               onClick={handleNext}
+              disabled={isAnimating}
               className="btn btn-primary flex-1"
             >
               {isLast ? (

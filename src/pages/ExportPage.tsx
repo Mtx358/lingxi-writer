@@ -1,15 +1,53 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Download, FileText, File, BookOpen, Check, AlertCircle, Settings } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import type { ExportData } from '@/utils/exporters';
 import { isElectron } from '@/utils/storage';
 
+// 格式/平台预设为静态数据，提到模块顶层避免每次渲染重建
+const FORMATS = [
+  { id: 'markdown', label: 'Markdown', icon: FileText, desc: '.md 纯文本格式' },
+  { id: 'docx', label: 'Word', icon: File, desc: '.docx 文档格式' },
+  { id: 'pdf', label: 'PDF', icon: File, desc: '.pdf 打印格式' },
+  { id: 'epub', label: 'EPUB', icon: BookOpen, desc: '.epub 电子书格式' },
+  { id: 'html', label: 'HTML', icon: FileText, desc: '.html 网页格式' },
+  { id: 'txt', label: '纯文本', icon: File, desc: '.txt 纯文本格式' },
+];
+
+const PLATFORMS = [
+  { id: 'general', label: '通用', desc: '标准排版' },
+  { id: 'qidian', label: '起点', desc: '起点中文网格式' },
+  { id: 'fanqie', label: '番茄', desc: '番茄小说格式' },
+  { id: 'wechat', label: '微信读书', desc: '微信读书格式' },
+];
+
+// 剥离 HTML 标签并解码 HTML 实体（如 &amp; &lt; &nbsp;），避免导出/预览出现实体残留
+function stripHtml(html: string): string {
+  const stripped = html.replace(/<[^>]*>/g, '');
+  const ta = document.createElement('textarea');
+  ta.innerHTML = stripped;
+  return ta.value;
+}
+
+// 统一的 Blob 下载：合并原 downloadFile/downloadBlob，避免每次渲染重建函数
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 export default function ExportPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const projects = useAppStore(s => s.projects);
   const chapters = useAppStore(s => s.chapters);
+  const foreshadows = useAppStore(s => s.foreshadows);
   const [format, setFormat] = useState<'markdown' | 'docx' | 'pdf' | 'epub' | 'txt' | 'html'>('markdown');
   const [includeToc, setIncludeToc] = useState(true);
   const [style, setStyle] = useState<'novel' | 'article' | 'script'>('novel');
@@ -22,8 +60,54 @@ export default function ExportPage() {
   const [exportProgress, setExportProgress] = useState(0);
   const [exportStage, setExportStage] = useState<'idle' | 'preparing' | 'generating' | 'saving'>('idle');
 
+  // 进度/重置定时器与挂载标记：组件卸载时统一清理，避免 setState 指向已卸载组件
+  const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMountedRef = useRef(true);
+
   const project = projects.find(p => p.id === projectId);
-  const mainChapters = chapters.filter(c => c.level === 2).sort((a, b) => a.order - b.order);
+  const mainChapters = useMemo(
+    () => chapters.filter(c => c.levelType === 'chapter').sort((a, b) => a.order - b.order),
+    [chapters]
+  );
+
+  // 导出前检查：基于真实伏笔/章节数据计算，不再硬编码假数据
+  const precheckIssues = useMemo(() => {
+    const issues: { type: 'warning' | 'info'; text: string }[] = [];
+    const pendingForeshadows = foreshadows.filter(
+      f => f.status !== 'paid-off' && f.status !== 'abandoned'
+    ).length;
+    if (pendingForeshadows > 0) {
+      issues.push({ type: 'warning', text: `有 ${pendingForeshadows} 个伏笔尚未回收` });
+    }
+    const draftChapters = chapters.filter(c => c.status === 'draft').length;
+    if (draftChapters > 0) {
+      issues.push({ type: 'info', text: `${draftChapters} 个章节状态为草稿` });
+    }
+    return issues;
+  }, [foreshadows, chapters]);
+
+  // 项目健康度：基于伏笔回收率（50%）与章节完成率（50%）动态计算
+  const health = useMemo(() => {
+    const totalForeshadows = foreshadows.length;
+    const recovered = foreshadows.filter(f => f.status === 'paid-off').length;
+    const foreshadowRate = totalForeshadows > 0 ? recovered / totalForeshadows : 1;
+    const totalChapters = chapters.length;
+    const completedChapters = chapters.filter(c => c.status === 'done').length;
+    const chapterRate = totalChapters > 0 ? completedChapters / totalChapters : 1;
+    const score = Math.round((foreshadowRate * 0.5 + chapterRate * 0.5) * 100);
+    const label = score >= 80 ? '良好' : score >= 60 ? '一般' : '需改进';
+    return { score, label };
+  }, [foreshadows, chapters]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (progressTimerRef.current) clearInterval(progressTimerRef.current);
+      if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+    };
+  }, []);
 
   const startProgress = (stage: 'preparing' | 'generating' | 'saving') => {
     setExportStage(stage);
@@ -33,6 +117,11 @@ export default function ExportPage() {
 
   const handleExport = async () => {
     if (!project) return;
+    // 新导出启动时清除上一次导出的重置定时器，避免与新导出状态冲突
+    if (resetTimerRef.current) {
+      clearTimeout(resetTimerRef.current);
+      resetTimerRef.current = null;
+    }
     setExporting(true);
     setExported(false);
     setExportMessage(null);
@@ -41,7 +130,7 @@ export default function ExportPage() {
     // 进度推进定时器：生成期间每 300ms 推进 5-8%，封顶 90%（避免虚假 100%）
     // 导出生成器已通过分块 yield（每 N 章让出事件循环）保证此定时器可正常触发，
     // 进度条会平滑推进；此处仅为可感知反馈，不代表精确比例
-    const progressTimer = setInterval(() => {
+    progressTimerRef.current = setInterval(() => {
       setExportProgress(prev => {
         if (prev >= 90) return prev;
         return Math.min(90, prev + Math.max(1, Math.round((90 - prev) * 0.08)));
@@ -53,11 +142,11 @@ export default function ExportPage() {
       if (format === 'markdown') {
         startProgress('generating');
         const content = generateMarkdown();
-        downloadFile(content, `${project.title}.md`, 'text/markdown');
+        downloadBlob(new Blob([content], { type: 'text/markdown;charset=utf-8' }), `${project.title}.md`);
       } else if (format === 'txt') {
         startProgress('generating');
         const content = generateTxt();
-        downloadFile(content, `${project.title}.txt`, 'text/plain');
+        downloadBlob(new Blob([content], { type: 'text/plain;charset=utf-8' }), `${project.title}.txt`);
       } else if (format === 'html') {
         // 按需加载导出器（仅 html 不依赖重型库，但为统一懒加载也走动态 import）
         startProgress('preparing');
@@ -65,7 +154,7 @@ export default function ExportPage() {
         const exportData: ExportData = { project, chapters: mainChapters, includeToc, style, platform };
         startProgress('generating');
         const content = generateHtml(exportData);
-        downloadFile(content, `${project.title}.html`, 'text/html');
+        downloadBlob(new Blob([content], { type: 'text/html;charset=utf-8' }), `${project.title}.html`);
       } else {
         // docx / pdf / epub：调用真实生成器
         // 动态加载导出器模块，使 docx/pdf-lib/jszip 等 968KB 重型依赖仅在真正导出时加载
@@ -105,14 +194,16 @@ export default function ExportPage() {
         const filename = `${project.title}.${ext}`;
 
         startProgress('saving');
-        if (isElectron()) {
+        // 显式检查 electronAPI 是否存在，缺失时回退到 Blob 下载，避免非空断言导致的运行时错误
+        const saveDialog = window.electronAPI?.dialog?.saveFile;
+        if (isElectron() && saveDialog) {
           // Electron：通过保存对话框选择路径，再写入二进制文件
-          const filePath = await window.electronAPI!.dialog.saveFile(filename, '', ext);
-          if (filePath) {
-            await window.electronAPI!.file.writeBuffer(filePath, base64);
+          const filePath = await saveDialog(filename, '', ext);
+          if (filePath && window.electronAPI?.file?.writeBuffer) {
+            await window.electronAPI.file.writeBuffer(filePath, base64);
           }
         } else {
-          // 非 Electron：base64 转 Blob 下载
+          // 非 Electron 或 bridge 缺失：base64 转 Blob 下载
           const blob = new Blob(
             [Uint8Array.from(atob(base64), c => c.charCodeAt(0))],
             { type: mime }
@@ -124,7 +215,9 @@ export default function ExportPage() {
       setExportProgress(100);
       setExportStage('idle');
       setExported(true);
-      setTimeout(() => {
+      // 3 秒后重置导出状态；保存 timer id 供新导出/卸载清理，并用 isMountedRef 守卫避免卸载后 setState
+      resetTimerRef.current = setTimeout(() => {
+        if (!isMountedRef.current) return;
         setExported(false);
         setExportProgress(0);
       }, 3000);
@@ -135,7 +228,10 @@ export default function ExportPage() {
       setExportProgress(0);
       setExportStage('idle');
     } finally {
-      clearInterval(progressTimer);
+      if (progressTimerRef.current) {
+        clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
       setExporting(false);
     }
   };
@@ -149,21 +245,25 @@ export default function ExportPage() {
     if (includeToc) {
       md += '## 目录\n\n';
       mainChapters.forEach((ch, idx) => {
-        md += `${idx + 1}. [${ch.title}](#${ch.title.replace(/\s/g, '-')})\n`;
+        // 用章节索引作为锚点，避免中文标题因编码/空格问题无法跳转
+        md += `${idx + 1}. [${ch.title}](#chapter-${idx + 1})\n`;
       });
       md += '\n---\n\n';
     }
 
-    mainChapters.forEach((ch) => {
+    mainChapters.forEach((ch, idx) => {
+      // 在标题前插入锚点，供目录跳转
+      md += `<a id="chapter-${idx + 1}"></a>\n\n`;
       md += `## ${ch.title}\n\n`;
       if (ch.summary) md += `*${ch.summary}*\n\n`;
-      const plainContent = ch.content
-        .replace(/<h[1-6][^>]*>/g, '### ')
-        .replace(/<\/h[1-6]>/g, '\n\n')
-        .replace(/<p>/g, '')
-        .replace(/<\/p>/g, '\n\n')
-        .replace(/<br\s*\/?>/g, '\n')
-        .replace(/<[^>]*>/g, '');
+      const plainContent = stripHtml(
+        ch.content
+          .replace(/<h[1-6][^>]*>/g, '### ')
+          .replace(/<\/h[1-6]>/g, '\n\n')
+          .replace(/<p>/g, '')
+          .replace(/<\/p>/g, '\n\n')
+          .replace(/<br\s*\/?>/g, '\n')
+      );
       md += plainContent;
       md += '\n\n---\n\n';
     });
@@ -178,51 +278,11 @@ export default function ExportPage() {
 
     mainChapters.forEach((ch) => {
       txt += `\n\n${ch.title}\n${'-'.repeat(ch.title.length)}\n\n`;
-      const plainContent = ch.content.replace(/<[^>]*>/g, '');
-      txt += plainContent;
+      txt += stripHtml(ch.content);
     });
 
     return txt;
   };
-
-  const downloadFile = (content: string, filename: string, type: string) => {
-    const blob = new Blob([content], { type: `${type};charset=utf-8` });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  const downloadBlob = (blob: Blob, filename: string) => {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  const formats = [
-    { id: 'markdown', label: 'Markdown', icon: FileText, desc: '.md 纯文本格式' },
-    { id: 'docx', label: 'Word', icon: File, desc: '.docx 文档格式' },
-    { id: 'pdf', label: 'PDF', icon: File, desc: '.pdf 打印格式' },
-    { id: 'epub', label: 'EPUB', icon: BookOpen, desc: '.epub 电子书格式' },
-    { id: 'html', label: 'HTML', icon: FileText, desc: '.html 网页格式' },
-    { id: 'txt', label: '纯文本', icon: File, desc: '.txt 纯文本格式' },
-  ];
-
-  const platforms = [
-    { id: 'general', label: '通用', desc: '标准排版' },
-    { id: 'qidian', label: '起点', desc: '起点中文网格式' },
-    { id: 'fanqie', label: '番茄', desc: '番茄小说格式' },
-    { id: 'wechat', label: '微信读书', desc: '微信读书格式' },
-  ];
 
   if (!project) {
     return (
@@ -231,11 +291,6 @@ export default function ExportPage() {
       </div>
     );
   }
-
-  const precheckIssues = [
-    { type: 'warning', text: '有 2 个伏笔尚未回收' },
-    { type: 'info', text: '1 个章节状态为草稿' },
-  ];
 
   return (
     <div className="h-screen w-screen flex flex-col bg-ink-950 overflow-hidden">
@@ -336,7 +391,7 @@ export default function ExportPage() {
               选择格式
             </h2>
             <div className="grid grid-cols-5 gap-2">
-              {formats.map(f => (
+              {FORMATS.map(f => (
                 <button
                   key={f.id}
                   onClick={() => setFormat(f.id as typeof format)}
@@ -364,21 +419,23 @@ export default function ExportPage() {
           <section className="mb-6">
             <h2 className="text-sm font-medium text-ink-200 mb-3">导出选项</h2>
             <div className="card p-4 space-y-4">
-              <label className="flex items-center justify-between cursor-pointer">
+              {/* 用 div 替代 label 承载点击，避免 label 内嵌带 onClick 的 div 在部分浏览器双触发 */}
+              <div
+                className="flex items-center justify-between cursor-pointer"
+                onClick={() => setIncludeToc(!includeToc)}
+              >
                 <div>
                   <div className="text-sm text-ink-200">包含目录</div>
                   <div className="text-xs text-ink-500">在文档开头生成章节目录</div>
                 </div>
-                <div className={`w-10 h-5 rounded-full transition-colors relative cursor-pointer ${
+                <div className={`w-10 h-5 rounded-full transition-colors relative ${
                   includeToc ? 'bg-amber-400' : 'bg-ink-700'
-                }`}
-                  onClick={() => setIncludeToc(!includeToc)}
-                >
+                }`}>
                   <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
                     includeToc ? 'left-5' : 'left-0.5'
                   }`} />
                 </div>
-              </label>
+              </div>
 
               <div className="divider" />
 
@@ -410,7 +467,7 @@ export default function ExportPage() {
               <div>
                 <div className="text-sm text-ink-200 mb-2">平台预设</div>
                 <div className="grid grid-cols-4 gap-2">
-                  {platforms.map(p => (
+                  {PLATFORMS.map(p => (
                     <button
                       key={p.id}
                       onClick={() => setPlatform(p.id as typeof platform)}
@@ -435,13 +492,19 @@ export default function ExportPage() {
             <div className="card p-4">
               <div className="flex items-center justify-between mb-3">
                 <span className="text-sm text-ink-300">项目健康度</span>
-                <span className="text-sm text-amber-400 font-medium">良好</span>
+                <span className="text-sm text-amber-400 font-medium">{health.label}</span>
               </div>
               <div className="w-full h-2 bg-ink-700 rounded-full overflow-hidden mb-4">
-                <div className="h-full bg-gradient-to-r from-amber-400 to-emerald-400 rounded-full" style={{ width: '82%' }} />
+                <div className="h-full bg-gradient-to-r from-amber-400 to-emerald-400 rounded-full" style={{ width: `${health.score}%` }} />
               </div>
 
               <div className="space-y-2">
+                {precheckIssues.length === 0 && (
+                  <div className="flex items-start gap-2 p-2 rounded text-xs bg-emerald-400/10 text-emerald-300">
+                    <Check className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                    <span>暂无待处理问题</span>
+                  </div>
+                )}
                 {precheckIssues.map((issue, idx) => (
                   <div
                     key={idx}
@@ -478,7 +541,7 @@ export default function ExportPage() {
                 <div key={ch.id} className="mb-4">
                   <h4 className="text-sm font-medium text-ink-200 writing-font mb-2">{ch.title}</h4>
                   <p className="text-xs text-ink-400 writing-font leading-relaxed line-clamp-3">
-                    {ch.content.replace(/<[^>]*>/g, '').slice(0, 150)}...
+                    {stripHtml(ch.content).slice(0, 150)}...
                   </p>
                 </div>
               ))}

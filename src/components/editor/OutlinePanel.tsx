@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useCallback, memo } from 'react';
+import { useState, useMemo, useRef, useCallback, useEffect, memo } from 'react';
 import { useClickOutside } from '@/hooks/useClickOutside';
 import {
   ChevronRight,
@@ -122,8 +122,8 @@ function ChapterNodeComponent({
   const levelLabel = CHAPTER_LEVEL_TYPE_LABELS[chapter.levelType];
 
   const handleClick = (e: React.MouseEvent) => {
+    // 行点击仅负责选中；折叠/展开统一交给三角按钮，避免点击与折叠行为耦合
     onSelect(chapter, e);
-    if (!e.ctrlKey && !e.metaKey && hasChildren) onToggleExpanded(chapter.id);
   };
 
   const handleDoubleClick = (e: React.MouseEvent) => {
@@ -388,6 +388,12 @@ function OutlineDetailPanel({
   const [editing, setEditing] = useState(false);
   const [localData, setLocalData] = useState(chapter);
   const saveVersion = useAppStore(s => s.saveVersion);
+
+  // 父组件 selectedChapter 变化时同步 localData，否则 handleSave 会用新 chapter.id
+  // 配合旧 localData，把 A 章的数据写到 B 章。仅在非编辑态同步，避免覆盖用户正在输入的草稿。
+  useEffect(() => {
+    if (!editing) setLocalData(chapter);
+  }, [chapter, editing]);
 
   const handleSave = () => {
     // 保存编辑前先创建版本快照（含元数据），使标题/摘要/状态等修改可通过版本历史恢复
@@ -739,6 +745,7 @@ export default function OutlinePanel() {
   const moveChapter = useAppStore(s => s.moveChapter);
   const updateChapter = useAppStore(s => s.updateChapter);
   const deleteChapter = useAppStore(s => s.deleteChapter);
+  const saveVersion = useAppStore(s => s.saveVersion);
   const characters = useAppStore(s => s.characters);
   const foreshadows = useAppStore(s => s.foreshadows);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
@@ -753,9 +760,10 @@ export default function OutlinePanel() {
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   );
 
-  const filteredChapters = filterStatus === 'all'
+  const filteredChapters = useMemo(() => filterStatus === 'all'
     ? chapters
-    : chapters.filter(c => c.status === filterStatus);
+    : chapters.filter(c => c.status === filterStatus),
+    [chapters, filterStatus]);
 
   // 全树共享的 parentId -> 已排序子节点数组映射。
   // 通过 useMemo 在 chapters/filterStatus 变更时才重新计算，引用稳定，
@@ -868,10 +876,20 @@ export default function OutlinePanel() {
     // moveChapter 内部也有同样校验（getSubtreeMaxDepth），但提前预判可在不修改 store 的情况下
     // 给出明确的中文提示，避免用户重复尝试。
     if (newParentId !== oldParentId) {
+      // 递归计算子树最大深度：加 visited Set 防止数据中存在环时栈溢出。
+      // 同时用 maxDepth 硬限制（50）兜底，避免极端深嵌套数据导致栈耗尽。
       const getSubtreeMaxDepth = (rootId: string): number => {
-        const kids = chapters.filter(c => c.parentId === rootId);
-        if (kids.length === 0) return 1;
-        return 1 + Math.max(...kids.map(k => getSubtreeMaxDepth(k.id)));
+        const visited = new Set<string>();
+        const MAX_DEPTH = 50;
+        const walk = (id: string, depth: number): number => {
+          if (depth > MAX_DEPTH) return depth;
+          if (visited.has(id)) return depth; // 检测到环，立即返回避免无限递归
+          visited.add(id);
+          const kids = chapters.filter(c => c.parentId === id);
+          if (kids.length === 0) return 1;
+          return 1 + Math.max(...kids.map(k => walk(k.id, depth + 1)));
+        };
+        return walk(rootId, 0);
       };
       const subtreeDepth = getSubtreeMaxDepth(draggedId);
       const targetLevel = newParentId
@@ -926,19 +944,41 @@ export default function OutlinePanel() {
 
   const handleBatchDelete = useCallback(() => {
     if (selectedIds.size === 0) return;
-    if (confirm(`确定删除选中的 ${selectedIds.size} 个章节吗？`)) {
-      selectedIds.forEach(id => deleteChapter(id));
+    // 父子关系防护：若某节点的祖先已在选中集合中，删除父节点时子节点会一并被级联删除，
+    // 此处再次单独删除会造成 store 重复处理或找不到节点。先过滤掉"祖先已被选中"的节点。
+    const hasSelectedAncestor = (id: string): boolean => {
+      let currentId: string | null = id;
+      const seen = new Set<string>();
+      while (currentId && !seen.has(currentId)) {
+        seen.add(currentId);
+        const node = chapters.find(c => c.id === currentId);
+        currentId = node?.parentId ?? null;
+        if (currentId && selectedIds.has(currentId)) return true;
+      }
+      return false;
+    };
+    const idsToDelete = Array.from(selectedIds).filter(id => !hasSelectedAncestor(id));
+    if (idsToDelete.length === 0) return;
+    if (confirm(`确定删除选中的 ${selectedIds.size} 个章节吗？\n（含子级将一并级联删除）`)) {
+      idsToDelete.forEach(id => deleteChapter(id));
       setSelectedIds(new Set());
       setSelectedChapter(null);
     }
     setShowBatchMenu(false);
-  }, [selectedIds, deleteChapter]);
+  }, [selectedIds, chapters, deleteChapter]);
 
   const handleBatchMerge = useCallback(() => {
     if (selectedIds.size < 2) return;
     const selectedChapters = chapters.filter(c => selectedIds.has(c.id));
+    if (selectedChapters.length < 2) return;
     const firstChapter = selectedChapters[0];
-    const mergedContent = selectedChapters.map(c => c.content).join('\n');
+    if (!confirm(`确定合并选中的 ${selectedChapters.length} 个章节吗？\n\n内容将按顺序拼接到首个章节"${firstChapter.title}"中，其余章节将被删除。`)) {
+      return;
+    }
+    // 合并前为首个章节创建版本快照，便于误操作后恢复
+    saveVersion(firstChapter.id, '批量合并前快照');
+    // HTML 直接拼接：用 '\n' 拼接多段 HTML 会产生破损 HTML（多余文本节点、未闭合标签交错）
+    const mergedContent = selectedChapters.map(c => c.content || '').join('');
     updateChapter(firstChapter.id, { content: mergedContent });
     selectedIds.forEach(id => {
       if (id !== firstChapter.id) deleteChapter(id);
@@ -946,22 +986,21 @@ export default function OutlinePanel() {
     setSelectedIds(new Set([firstChapter.id]));
     setSelectedChapter(firstChapter);
     setShowBatchMenu(false);
-  }, [selectedIds, chapters, updateChapter, deleteChapter]);
+  }, [selectedIds, chapters, updateChapter, deleteChapter, saveVersion]);
 
-  const getTotalWordCount = () => chapters.reduce((sum, ch) => sum + ch.wordCount, 0);
+  const getTotalWordCount = useMemo(() => chapters.reduce((sum, ch) => sum + ch.wordCount, 0),
+    [chapters]);
 
-  const getChapterStats = () => {
-    const stats = { volumes: 0, parts: 0, sections: 0, chapters: 0 };
+  const stats = useMemo(() => {
+    const s = { volumes: 0, parts: 0, sections: 0, chapters: 0 };
     chapters.forEach(ch => {
-      if (ch.levelType === 'volume') stats.volumes++;
-      else if (ch.levelType === 'part') stats.parts++;
-      else if (ch.levelType === 'section') stats.sections++;
-      else if (ch.levelType === 'chapter') stats.chapters++;
+      if (ch.levelType === 'volume') s.volumes++;
+      else if (ch.levelType === 'part') s.parts++;
+      else if (ch.levelType === 'section') s.sections++;
+      else if (ch.levelType === 'chapter') s.chapters++;
     });
-    return stats;
-  };
-
-  const stats = getChapterStats();
+    return s;
+  }, [chapters]);
 
   return (
     <div className="flex h-full">
@@ -981,7 +1020,7 @@ export default function OutlinePanel() {
             <span>{stats.volumes}卷</span>
             <span>{stats.parts}部</span>
             <span>{stats.chapters}章</span>
-            <span className="text-amber-400">{getTotalWordCount()}字</span>
+            <span className="text-amber-400">{getTotalWordCount}字</span>
           </div>
         </div>
 

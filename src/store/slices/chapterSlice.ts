@@ -54,16 +54,16 @@ export const createChapterSlice: StateCreator<AppState, [], [], ChapterSlice> = 
     const siblings = chapters.filter(c => c.parentId === parentId);
     const newOrder = order !== undefined ? order : siblings.length;
 
-    const adjustedChapters = siblings
-      .filter(c => c.order >= newOrder)
-      .map(c => ({ ...c, order: c.order + 1 }));
-
     const now = new Date().toISOString();
     const newChapter: Chapter = {
       id: generateId(), projectId: currentProjectId, parentId, title, summary: '', order: newOrder, level, levelType: resolvedLevelType, status: DEFAULT_CHAPTER_STATUS, wordCount: 0, content: '', createdAt: now, updatedAt: now,
     };
 
-    const updatedChapters = [...chapters, ...adjustedChapters, newChapter];
+    // 原地对 order >= newOrder 的兄弟章节 +1，避免把 siblings 副本追加到末尾导致同一章节出现两次
+    const updatedChapters = [
+      ...chapters.map(c => c.parentId === parentId && c.order >= newOrder ? { ...c, order: c.order + 1 } : c),
+      newChapter,
+    ];
     set({ chapters: updatedChapters, currentChapterId: newChapter.id });
     markDirty();
     return newChapter;
@@ -108,7 +108,16 @@ export const createChapterSlice: StateCreator<AppState, [], [], ChapterSlice> = 
       payoffChapterId: f.payoffChapterId && deletedChapterSet.has(f.payoffChapterId) ? null : f.payoffChapterId,
     }));
 
-    set({ chapters: updatedChapters, currentChapterId: newCurrent, foreshadows: updatedForeshadows });
+    // 级联清理被删章节（含子章节）的版本快照与撤销历史，避免留下孤儿数据
+    const { versions, histories } = get();
+    const updatedVersions = { ...versions };
+    const updatedHistories = { ...histories };
+    for (const id of toDelete) {
+      delete updatedVersions[id];
+      delete updatedHistories[id];
+    }
+
+    set({ chapters: updatedChapters, currentChapterId: newCurrent, foreshadows: updatedForeshadows, versions: updatedVersions, histories: updatedHistories });
     markDirty();
   },
 
@@ -140,12 +149,38 @@ export const createChapterSlice: StateCreator<AppState, [], [], ChapterSlice> = 
       return false;
     }
 
-    let updatedChapters = chapters.map(c => {
-      if (c.id === chapterId) return { ...c, parentId: newParentId, order: newOrder, level: newLevel, levelType: levelToLevelType(newLevel) };
-      if (c.parentId === chapter.parentId && c.order > chapter.order) return { ...c, order: c.order - 1 };
-      if (c.parentId === newParentId && c.order >= newOrder && c.id !== chapterId) return { ...c, order: c.order + 1 };
-      return c;
-    });
+    let updatedChapters: Chapter[];
+    if (newParentId === chapter.parentId) {
+      // 同父级移动：先把被移动章节摘出，对中间章节统一平移，再插入新位置。
+      // 避免“原父级 -1”与“新父级 +1”对同一批章节同时生效导致 order 空洞或重复。
+      const siblingsAfterRemoval = chapters
+        .filter(c => c.parentId === chapter.parentId && c.id !== chapterId)
+        .sort((a, b) => a.order - b.order);
+      const clampedNewOrder = Math.max(0, Math.min(newOrder, siblingsAfterRemoval.length));
+      const oldOrder = chapter.order;
+      updatedChapters = chapters.map(c => {
+        if (c.id === chapterId) {
+          return { ...c, parentId: newParentId, order: clampedNewOrder, level: newLevel, levelType: levelToLevelType(newLevel) };
+        }
+        if (c.parentId !== chapter.parentId) return c;
+        if (oldOrder < clampedNewOrder) {
+          // 向后移动：order 在 (oldOrder, clampedNewOrder] 的章节统一 -1
+          if (c.order > oldOrder && c.order <= clampedNewOrder) return { ...c, order: c.order - 1 };
+        } else if (oldOrder > clampedNewOrder) {
+          // 向前移动：order 在 [clampedNewOrder, oldOrder) 的章节统一 +1
+          if (c.order >= clampedNewOrder && c.order < oldOrder) return { ...c, order: c.order + 1 };
+        }
+        return c;
+      });
+    } else {
+      // 跨父级移动：原父级 order > chapter.order 的章节 -1，新父级 order >= newOrder 的章节 +1
+      updatedChapters = chapters.map(c => {
+        if (c.id === chapterId) return { ...c, parentId: newParentId, order: newOrder, level: newLevel, levelType: levelToLevelType(newLevel) };
+        if (c.parentId === chapter.parentId && c.order > chapter.order) return { ...c, order: c.order - 1 };
+        if (c.parentId === newParentId && c.order >= newOrder) return { ...c, order: c.order + 1 };
+        return c;
+      });
+    }
 
     // 递归更新子章节的 level 与 levelType，保持两者一致
     const updateChildrenLevel = (parentId: string, levelOffset: number) => {

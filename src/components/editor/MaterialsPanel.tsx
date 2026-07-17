@@ -64,6 +64,19 @@ export function clearImageErrorCache(path?: string): void {
   }
 }
 
+/**
+ * 清空图片 dataURL 成功缓存（可选传入 path 仅清单个）。
+ * 项目切换或主动释放内存时调用：模块级缓存跨项目共享，长期使用会导致内存上涨。
+ * 注意：组件内部不会自动调用，由调用方（如项目切换钩子）按需触发。
+ */
+export function clearImageCache(path?: string): void {
+  if (path) {
+    imageDataUrlCache.delete(path);
+  } else {
+    imageDataUrlCache.clear();
+  }
+}
+
 function getAttachmentIcon(ext: string) {
   if (IMAGE_EXTS.includes(ext)) return Image;
   if (AUDIO_EXTS.includes(ext)) return Music;
@@ -85,6 +98,10 @@ function ImageFallback({ src, name }: { src: string; name: string }) {
   // 命中模块级 LRU 缓存时不会重复读取磁盘
   useEffect(() => {
     let active = true;
+    // 切换 src 时必须复位 error 状态并重置 resolvedSrc，否则上一个图片加载失败后
+    // 即便新 src 能正常读取，仍会停留在错误占位图标上。
+    setError(false);
+    setResolvedSrc(src);
     if (src.startsWith('file://')) {
       const electronAPI = window.electronAPI as unknown as { file?: { readDataURL?: (p: string) => Promise<string> } } | undefined;
       if (electronAPI?.file?.readDataURL) {
@@ -189,20 +206,25 @@ export default function MaterialsPanel() {
     await api.file.openExternal(att.path);
   };
 
-  const handleRemoveAttachment = (mat: Material, attId: string) => {
-    const next = (mat.attachments || []).filter(a => a.id !== attId);
+  const handleRemoveAttachment = (mat: Material, att: MaterialAttachment) => {
+    const attName = att.name || att.path;
+    if (!confirm(`确定删除附件"${attName}"吗？\n\n磁盘上的副本文件也会尝试一并删除。`)) return;
+    const next = (mat.attachments || []).filter(a => a.id !== att.id);
     updateMaterial(mat.id, { attachments: next });
+    // 尝试删除磁盘副本：bridge 不支持或失败时静默忽略（用户已确认移除记录）
+    const api = window.electronAPI as unknown as { material?: { deleteAttachment?: (p: string) => Promise<void> } } | undefined;
+    api?.material?.deleteAttachment?.(att.path).catch(() => { /* 静默：记录已移除即可 */ });
   };
 
+  // 注意：必须先复制再 sort，否则会原地修改 store 数组，引发 zustand 选择器引用不变
+  // 从而导致下游组件无法感知变更、且污染全局状态。
+  const sortByPinnedAndTime = (a: Material, b: Material) => {
+    if (a.pinned !== b.pinned) return b.pinned ? 1 : -1;
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+  };
   const filtered = filter === 'all'
-    ? materials.sort((a, b) => {
-        if (a.pinned !== b.pinned) return b.pinned ? 1 : -1;
-        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-      })
-    : materials.filter(m => m.type === filter).sort((a, b) => {
-        if (a.pinned !== b.pinned) return b.pinned ? 1 : -1;
-        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-      });
+    ? [...materials].sort(sortByPinnedAndTime)
+    : materials.filter(m => m.type === filter).sort(sortByPinnedAndTime);
 
   return (
     <div className="h-full flex flex-col">
@@ -379,7 +401,7 @@ export default function MaterialsPanel() {
                                       </div>
                                     </div>
                                     <button
-                                      onClick={(e) => { e.stopPropagation(); handleRemoveAttachment(mat, att.id); }}
+                                      onClick={(e) => { e.stopPropagation(); handleRemoveAttachment(mat, att); }}
                                       className="p-1 rounded text-ink-500 hover:text-red-400 hover:bg-ink-700/70 transition-colors flex-shrink-0"
                                       title="删除"
                                     >
@@ -401,7 +423,7 @@ export default function MaterialsPanel() {
                                       <ExternalLink className="w-3 h-3" />
                                     </button>
                                     <button
-                                      onClick={(e) => { e.stopPropagation(); handleRemoveAttachment(mat, att.id); }}
+                                      onClick={(e) => { e.stopPropagation(); handleRemoveAttachment(mat, att); }}
                                       className="p-1 rounded text-ink-500 hover:text-red-400 hover:bg-ink-700/70 transition-colors flex-shrink-0"
                                       title="删除"
                                     >

@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell, ipcMain, dialog, safeStorage, Menu, session 
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import JSZip from 'jszip';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -14,6 +15,17 @@ let mainWindow: BrowserWindow | null = null;
 let autoBackupTimer: ReturnType<typeof setInterval> | null = null;
 
 const FILE_VERSION = '1.0.0';
+
+// IPC 幂等注册：防止热重载或多次调用导致
+// "Attempted to register a second handler for 'xxx'" 错误
+function safeIpcHandle(
+  channel: string,
+  listener: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => any,
+): void {
+  try { ipcMain.removeHandler(channel); } catch {}
+  // 使用方括号访问避免与下方 replace_all 字面量冲突
+  ipcMain['handle'](channel, listener);
+}
 
 // 允许的存储 key 白名单（非 project_ 前缀的全局 key）
 // project_ 前缀的 key 由 resolveFilePath 单独处理，按 projectId 分目录存储
@@ -73,13 +85,8 @@ async function copyDir(src: string, dest: string): Promise<void> {
 }
 
 function generateChecksum(data: string): string {
-  let hash = 0;
-  for (let i = 0; i < data.length; i++) {
-    const char = data.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return Math.abs(hash).toString(16).padStart(8, '0');
+  // 改用 sha256：DJB2 32 位哈希碰撞概率过高，无法可靠校验工程文件完整性
+  return createHash('sha256').update(data, 'utf-8').digest('hex');
 }
 
 // 安全校验：工程文件路径必须是绝对路径、.cwp 后缀、且不含空字节/穿越符，
@@ -95,15 +102,27 @@ function isSafeProjectFilePath(filePath: unknown): filePath is string {
 }
 
 // 备份路径必须位于 backups 目录内
+// 严格匹配：resolved === backupsRoot 或 resolved 以 backupsRoot + path.sep 开头，
+// 防止 /userData/backups-malicious/evil.cwp 这类前缀绕过
 function isSafeBackupPath(p: unknown): p is string {
   if (typeof p !== 'string' || !p || p.includes('\0')) return false;
   const resolved = path.resolve(p);
   const backupsRoot = getBackupsDir();
-  return resolved.startsWith(backupsRoot + path.sep) || resolved.startsWith(backupsRoot);
+  return resolved === backupsRoot || resolved.startsWith(backupsRoot + path.sep);
+}
+
+// 校验路径是否位于 userData 数据目录内（严格前缀匹配）
+// 统一供 storage:readFileBase64 / writeFile / writeFileBuffer 复用，
+// 防止 /userData-malicious 这类前缀绕过
+function isInsideDataDir(filePath: unknown): boolean {
+  if (typeof filePath !== 'string' || !filePath || filePath.includes('\0')) return false;
+  const resolved = path.resolve(filePath);
+  const dataDir = getDataDir();
+  return resolved === dataDir || resolved.startsWith(dataDir + path.sep);
 }
 
 function registerProjectFileHandlers() {
-  ipcMain.handle('projectFile:read', async (_event, filePath: string) => {
+  safeIpcHandle('projectFile:read', async (_event, filePath: string) => {
     try {
       if (!isSafeProjectFilePath(filePath)) return { success: false, error: '非法的工程文件路径' };
       const buffer = await fs.readFile(filePath);
@@ -157,15 +176,17 @@ function registerProjectFileHandlers() {
         },
       };
 
-      const versionsFolder = zip.folder('versions');
-      if (versionsFolder) {
-        const files = Object.keys(versionsFolder.files);
-        for (const file of files) {
-          if (file.endsWith('.json')) {
-            const chapterId = file.slice(0, -5);
-            result.data.versions[chapterId] = await readJson(`versions/${file}`) || [];
-          }
-        }
+      // 版本历史加载：
+      // 之前用 zip.folder('versions').files 遍历，会返回整个 zip 的全部条目路径，
+      // readJson(`versions/${file}`) 会拼成 versions/versions/chapter1.json 找不到，
+      // 且 chapterId = file.slice(0, -5) 得到 versions/chapter1 而非 chapter1。
+      // 修复：用根 zip 按完整路径过滤，chapterId 截取 'versions/' 前缀长度，直接读原始路径。
+      const versionFiles = Object.keys(zip.files).filter(name =>
+        name.startsWith('versions/') && name.endsWith('.json')
+      );
+      for (const f of versionFiles) {
+        const chapterId = f.slice('versions/'.length, -5);
+        result.data.versions[chapterId] = await readJson(f) || [];
       }
 
       return result;
@@ -175,7 +196,7 @@ function registerProjectFileHandlers() {
     }
   });
 
-  ipcMain.handle('projectFile:write', async (_event, filePath: string, data: {
+  safeIpcHandle('projectFile:write', async (_event, filePath: string, data: {
     project: unknown;
     chapters: unknown;
     characters: unknown;
@@ -244,7 +265,7 @@ function registerProjectFileHandlers() {
     }
   });
 
-  ipcMain.handle('projectFile:validate', async (_event, filePath: string) => {
+  safeIpcHandle('projectFile:validate', async (_event, filePath: string) => {
     try {
       if (!isSafeProjectFilePath(filePath)) return { valid: false, error: '非法的工程文件路径' };
       const buffer = await fs.readFile(filePath);
@@ -273,7 +294,7 @@ function registerProjectFileHandlers() {
     }
   });
 
-  ipcMain.handle('projectFile:backup', async (_event, filePath: string, keepCount = 5) => {
+  safeIpcHandle('projectFile:backup', async (_event, filePath: string, keepCount = 5) => {
     try {
       if (!isSafeProjectFilePath(filePath)) return { success: false, error: '非法的工程文件路径' };
       const backupsDir = path.join(getBackupsDir(), path.basename(filePath));
@@ -296,7 +317,7 @@ function registerProjectFileHandlers() {
     }
   });
 
-  ipcMain.handle('projectFile:listBackups', async (_event, filePath: string) => {
+  safeIpcHandle('projectFile:listBackups', async (_event, filePath: string) => {
     try {
       if (!isSafeProjectFilePath(filePath)) return { success: false, backups: [] };
       const backupsDir = path.join(getBackupsDir(), path.basename(filePath));
@@ -316,7 +337,7 @@ function registerProjectFileHandlers() {
     }
   });
 
-  ipcMain.handle('projectFile:restoreBackup', async (_event, backupPath: string, targetPath: string) => {
+  safeIpcHandle('projectFile:restoreBackup', async (_event, backupPath: string, targetPath: string) => {
     try {
       if (!isSafeBackupPath(backupPath)) return { success: false, error: '非法的备份路径' };
       if (!isSafeProjectFilePath(targetPath)) return { success: false, error: '非法的目标路径' };
@@ -327,8 +348,9 @@ function registerProjectFileHandlers() {
     }
   });
 
-  ipcMain.handle('projectFile:openDialog', async () => {
-    const result = await dialog.showOpenDialog(mainWindow!, {
+  safeIpcHandle('projectFile:openDialog', async () => {
+    if (!mainWindow) return null;
+    const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile'],
       title: '打开工程文件',
       filters: [{ name: '创作工坊工程', extensions: ['cwp'] }],
@@ -337,8 +359,9 @@ function registerProjectFileHandlers() {
     return result.filePaths[0];
   });
 
-  ipcMain.handle('projectFile:saveDialog', async (_event, defaultName: string) => {
-    const result = await dialog.showSaveDialog(mainWindow!, {
+  safeIpcHandle('projectFile:saveDialog', async (_event, defaultName: string) => {
+    if (!mainWindow) return null;
+    const result = await dialog.showSaveDialog(mainWindow, {
       title: '保存工程文件',
       defaultPath: defaultName,
       filters: [{ name: '创作工坊工程', extensions: ['cwp'] }],
@@ -358,8 +381,47 @@ async function cleanupOldBackups(filePath: string) {
   }
 }
 
+// file:openExternal 后缀白名单（仅允许常见安全文档/媒体类型）
+const ALLOWED_OPEN_EXTERNAL_EXTS = new Set([
+  'txt', 'md', 'markdown', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp',
+  'mp3', 'wav', 'ogg', 'flac', 'aac', 'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt',
+]);
+// 危险可执行后缀黑名单（双重防御）
+const FORBIDDEN_OPEN_EXTERNAL_EXTS = new Set([
+  'exe', 'bat', 'sh', 'app', 'cmd', 'ps1', 'com', 'scr', 'vbs', 'js', 'mjs', 'jar',
+]);
+
+// material:saveAttachment 的源路径白名单：
+// 渲染层被 XSS 后可调用此接口把系统敏感文件复制到 materials 目录再外传，
+// 这里要求 sourcePath 必须是用户最近 N 秒内通过 dialog:selectFile 主动选择的文件。
+const RECENT_SELECTED_FILES_TTL_MS = 5 * 60 * 1000;
+const recentSelectedFiles = new Map<string, number>();
+
+function rememberSelectedFile(filePath: string): void {
+  if (!filePath || typeof filePath !== 'string') return;
+  const abs = path.resolve(filePath);
+  recentSelectedFiles.set(abs, Date.now());
+  // 顺手清理过期项
+  const now = Date.now();
+  for (const [p, ts] of recentSelectedFiles) {
+    if (now - ts > RECENT_SELECTED_FILES_TTL_MS) recentSelectedFiles.delete(p);
+  }
+}
+
+function isRecentlySelectedFile(filePath: unknown): boolean {
+  if (typeof filePath !== 'string' || !filePath) return false;
+  const abs = path.resolve(filePath);
+  const ts = recentSelectedFiles.get(abs);
+  if (!ts) return false;
+  if (Date.now() - ts > RECENT_SELECTED_FILES_TTL_MS) {
+    recentSelectedFiles.delete(abs);
+    return false;
+  }
+  return true;
+}
+
 function registerStorageHandlers() {
-  ipcMain.handle('storage:read', async (_event, key: string) => {
+  safeIpcHandle('storage:read', async (_event, key: string) => {
     try {
       if (!isValidStorageKey(key)) return null;
       const filePath = resolveFilePath(key);
@@ -370,7 +432,7 @@ function registerStorageHandlers() {
     }
   });
 
-  ipcMain.handle('storage:write', async (_event, key: string, value: unknown) => {
+  safeIpcHandle('storage:write', async (_event, key: string, value: unknown) => {
     try {
       if (!isValidStorageKey(key)) return false;
       const filePath = resolveFilePath(key);
@@ -385,7 +447,7 @@ function registerStorageHandlers() {
     }
   });
 
-  ipcMain.handle('storage:remove', async (_event, key: string) => {
+  safeIpcHandle('storage:remove', async (_event, key: string) => {
     try {
       if (!isValidStorageKey(key)) return false;
       if (key.startsWith('project_') && !key.includes('_', 'project_'.length + 1)) {
@@ -401,7 +463,7 @@ function registerStorageHandlers() {
     }
   });
 
-  ipcMain.handle('storage:listProjectDirs', async () => {
+  safeIpcHandle('storage:listProjectDirs', async () => {
     try {
       const dir = getProjectsDir();
       if (!(await pathExists(dir))) return [];
@@ -412,7 +474,7 @@ function registerStorageHandlers() {
     }
   });
 
-  ipcMain.handle('storage:backupProject', async (_event, projectId: string, keepCount = 5) => {
+  safeIpcHandle('storage:backupProject', async (_event, projectId: string, keepCount = 5) => {
     try {
       const srcDir = path.join(getProjectsDir(), projectId);
       if (!(await pathExists(srcDir))) return false;
@@ -432,13 +494,16 @@ function registerStorageHandlers() {
     }
   });
 
-  ipcMain.handle('dialog:selectFile', async () => {
-    const result = await dialog.showOpenDialog(mainWindow!, {
+  safeIpcHandle('dialog:selectFile', async () => {
+    if (!mainWindow) return null;
+    const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile'],
       title: '选择附件文件',
     });
     if (result.canceled || result.filePaths.length === 0) return null;
     const filePath = result.filePaths[0];
+    // 记入最近选择白名单，供 material:saveAttachment 校验源路径
+    rememberSelectedFile(filePath);
     try {
       const buffer = await fs.readFile(filePath);
       return {
@@ -452,16 +517,15 @@ function registerStorageHandlers() {
     }
   });
 
-  ipcMain.handle('storage:readFileBase64', async (_event, filePath: string) => {
+  safeIpcHandle('storage:readFileBase64', async (_event, filePath: string) => {
     try {
-      if (typeof filePath !== 'string' || !filePath) return null;
-      const resolved = path.resolve(filePath);
-      const dataDir = getDataDir();
       // 严格限制只能读取 userData 目录内的文件，防止路径穿越读取系统任意文件
-      if (!resolved.startsWith(dataDir)) {
+      // （使用 isInsideDataDir 严格前缀匹配，防止 /userData-malicious 这类前缀绕过）
+      if (!isInsideDataDir(filePath)) {
         console.error('readFileBase64: path outside data dir', filePath);
         return null;
       }
+      const resolved = path.resolve(filePath);
       const buffer = await fs.readFile(resolved);
       return buffer.toString('base64');
     } catch {
@@ -469,8 +533,9 @@ function registerStorageHandlers() {
     }
   });
 
-  ipcMain.handle('dialog:saveFile', async (_event, defaultName: string, _data: string, filterExt: string) => {
-    const result = await dialog.showSaveDialog(mainWindow!, {
+  safeIpcHandle('dialog:saveFile', async (_event, defaultName: string, _data: string, filterExt: string) => {
+    if (!mainWindow) return null;
+    const result = await dialog.showSaveDialog(mainWindow, {
       title: '保存导出文件',
       defaultPath: defaultName,
       filters: [{ name: filterExt.toUpperCase(), extensions: [filterExt] }],
@@ -479,15 +544,13 @@ function registerStorageHandlers() {
     return result.filePath;
   });
 
-  ipcMain.handle('storage:writeFile', async (_event, filePath: string, data: string, encoding?: string) => {
+  safeIpcHandle('storage:writeFile', async (_event, filePath: string, data: string, encoding?: string) => {
     try {
-      if (typeof filePath !== 'string' || !filePath) return false;
-      const resolved = path.resolve(filePath);
-      const dataDir = getDataDir();
-      if (!resolved.startsWith(dataDir)) {
+      if (!isInsideDataDir(filePath)) {
         console.error('writeFile: path outside data dir', filePath);
         return false;
       }
+      const resolved = path.resolve(filePath);
       await fs.writeFile(resolved, data, { encoding: (encoding as BufferEncoding) || 'utf-8' });
       return true;
     } catch (e) {
@@ -496,15 +559,13 @@ function registerStorageHandlers() {
     }
   });
 
-  ipcMain.handle('storage:writeFileBuffer', async (_event, filePath: string, base64Data: string) => {
+  safeIpcHandle('storage:writeFileBuffer', async (_event, filePath: string, base64Data: string) => {
     try {
-      if (typeof filePath !== 'string' || !filePath) return false;
-      const resolved = path.resolve(filePath);
-      const dataDir = getDataDir();
-      if (!resolved.startsWith(dataDir)) {
+      if (!isInsideDataDir(filePath)) {
         console.error('writeFileBuffer: path outside data dir', filePath);
         return false;
       }
+      const resolved = path.resolve(filePath);
       await fs.writeFile(resolved, Buffer.from(base64Data, 'base64'));
       return true;
     } catch (e) {
@@ -513,8 +574,18 @@ function registerStorageHandlers() {
     }
   });
 
-  ipcMain.handle('file:openExternal', async (_event, filePath: string) => {
+  safeIpcHandle('file:openExternal', async (_event, filePath: string) => {
     if (!filePath || typeof filePath !== 'string') return false;
+    // 后缀双重防御：先禁止可执行后缀，再要求在白名单中
+    const ext = path.extname(filePath).slice(1).toLowerCase();
+    if (FORBIDDEN_OPEN_EXTERNAL_EXTS.has(ext)) {
+      console.error('openExternal: forbidden extension', ext);
+      return false;
+    }
+    if (!ext || !ALLOWED_OPEN_EXTERNAL_EXTS.has(ext)) {
+      console.error('openExternal: extension not in allowlist', ext);
+      return false;
+    }
     try {
       await shell.openPath(filePath);
       return true;
@@ -526,8 +597,14 @@ function registerStorageHandlers() {
   // 素材附件持久化：将用户选择的源文件复制到项目数据目录下的 materials/<projectId>/，
   // 避免用户移动/删除原文件导致附件失效；同时杜绝 base64 内嵌 JSON 的体积与注入风险。
   // 返回复制后的绝对路径，供 MaterialAttachment.path 存储。
-  ipcMain.handle('material:saveAttachment', async (_event, sourcePath: string, projectId: string, attachmentId: string) => {
+  safeIpcHandle('material:saveAttachment', async (_event, sourcePath: string, projectId: string, attachmentId: string) => {
     if (!sourcePath || !projectId || !attachmentId) return null;
+    // 安全：sourcePath 必须是用户最近通过 dialog:selectFile 主动选择的文件，
+    // 防止渲染层被 XSS 后传入 ~/.ssh/id_rsa、/etc/passwd 等系统敏感文件被复制外泄
+    if (!isRecentlySelectedFile(sourcePath)) {
+      console.error('saveAttachment: sourcePath not in recent selection whitelist', sourcePath);
+      return null;
+    }
     try {
       const materialsDir = path.join(getDataDir(), 'materials', projectId);
       await fs.mkdir(materialsDir, { recursive: true });
@@ -541,7 +618,7 @@ function registerStorageHandlers() {
     }
   });
 
-  ipcMain.handle('storage:encrypt', async (_event, plainText: string) => {
+  safeIpcHandle('storage:encrypt', async (_event, plainText: string) => {
     if (!plainText || typeof plainText !== 'string') return null;
     // safeStorage 不可用时拒绝加密，调用方据此不应落盘明文 apiKey
     if (!safeStorage.isEncryptionAvailable()) {
@@ -557,7 +634,7 @@ function registerStorageHandlers() {
     }
   });
 
-  ipcMain.handle('storage:decrypt', async (_event, encryptedBase64: string) => {
+  safeIpcHandle('storage:decrypt', async (_event, encryptedBase64: string) => {
     if (!encryptedBase64 || typeof encryptedBase64 !== 'string') return null;
     try {
       const encrypted = Buffer.from(encryptedBase64, 'base64');
@@ -569,7 +646,7 @@ function registerStorageHandlers() {
   });
 
   // 崩溃恢复检查
-  ipcMain.handle('system:checkCrashRecovery', async () => {
+  safeIpcHandle('system:checkCrashRecovery', async () => {
     try {
       return await checkCrashRecovery();
     } catch (e) {
@@ -584,6 +661,28 @@ function registerStorageHandlers() {
 // 即使渲染层被 XSS 注入，攻击者也无法拿到 API 密钥
 // ============================================================================
 const aiAbortControllers = new Map<string, AbortController>();
+
+// 校验 AI 代理 baseUrl，防止渲染层被 XSS 后通过 baseUrl 走 SSRF
+// 或把 API 密钥外传到攻击者控制的端点。
+// 仅允许已知 AI 服务商域名（https）以及本地 loopback（http，自部署模型）。
+function isAllowedAiBaseUrl(baseUrl: string): boolean {
+  if (typeof baseUrl !== 'string' || !baseUrl) return false;
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return false;
+  }
+  // 禁止 file: 等危险协议，仅允许 http/https
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+  const host = url.hostname;
+  if (url.protocol === 'https:') {
+    // 仅允许已知 AI 服务商域名
+    return host === 'api.openai.com' || host === 'api.deepseek.com';
+  }
+  // http: 仅允许 loopback（local 模式自部署模型如 ollama）
+  return host === 'localhost' || host === '127.0.0.1';
+}
 
 async function loadStoredAISettings(): Promise<{
   apiKey: string;
@@ -619,7 +718,7 @@ async function loadStoredAISettings(): Promise<{
 }
 
 function registerAIProxyHandlers() {
-  ipcMain.handle('ai:proxyStream', async (event, params: {
+  safeIpcHandle('ai:proxyStream', async (event, params: {
     provider: string;
     baseUrl?: string;
     model?: string;
@@ -633,6 +732,10 @@ function registerAIProxyHandlers() {
     // 密钥从主进程存储读取，渲染层不传密钥
     const stored = await loadStoredAISettings();
     const baseUrl = params.baseUrl || stored.baseUrl;
+    // SSRF 防御：baseUrl 必须通过白名单校验（已知 AI 服务商域名或本地 loopback）
+    if (baseUrl && !isAllowedAiBaseUrl(baseUrl)) {
+      throw new Error(`Disallowed AI baseUrl: ${baseUrl}`);
+    }
     const apiKey = stored.apiKey;
 
     const modelMap: Record<string, string> = {
@@ -733,7 +836,7 @@ function registerAIProxyHandlers() {
     }
   });
 
-  ipcMain.handle('ai:abort', (_event, requestId: string) => {
+  safeIpcHandle('ai:abort', (_event, requestId: string) => {
     const controller = aiAbortControllers.get(requestId);
     if (controller) {
       controller.abort();
@@ -865,13 +968,17 @@ function createWindow() {
   // 注入 Content-Security-Policy，阻断 XSS → 任意 IPC 调用的攻击链
   const isDev = !!VITE_DEV_SERVER_URL;
   const devOrigin = isDev ? new URL(VITE_DEV_SERVER_URL).origin : '';
+  // connect-src 收窄为已知 AI 服务域名白名单 + 本地 loopback，
+  // 不再使用 https: 通配，防止 XSS 后把数据外传到任意 https 端点
+  const aiConnectSrc = "'self' https://api.openai.com https://api.deepseek.com http://localhost:* http://127.0.0.1:*";
+  const devConnectExtra = isDev ? ` ${devOrigin} ws://localhost:* ws://127.0.0.1:*` : '';
   const csp = [
     "default-src 'self'",
     `script-src 'self'${isDev ? ` 'unsafe-inline' ${devOrigin}` : ''}`,
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob: https:",
     "font-src 'self' data:",
-    `connect-src 'self' https: http://localhost:* http://127.0.0.1:*${isDev ? ` ws://localhost:* ws://127.0.0.1:*` : ''}`,
+    `connect-src ${aiConnectSrc}${devConnectExtra}`,
     "media-src 'self' data: blob:",
     "object-src 'none'",
     "base-uri 'self'",
@@ -900,6 +1007,9 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // 显式启用 sandbox，限制渲染进程对 Node API 的访问，
+      // 即使 preload 出现原型污染也无法直接拿到 require/process
+      sandbox: true,
     },
   });
 
@@ -919,22 +1029,37 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
-  registerProjectFileHandlers();
-  registerStorageHandlers();
-  registerAIProxyHandlers();
-  createMenu();
-  createWindow();
-
-  // 启动自动备份（每 5 分钟备份一次所有项目）
-  startAutoBackup();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+// 单实例锁：防止多实例同时写入 userData 造成数据损坏或备份竞争
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  // 已有实例运行，直接退出当前进程
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // 用户尝试启动第二个实例：聚焦到主窗口
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
     }
   });
-});
+
+  app.whenReady().then(() => {
+    registerProjectFileHandlers();
+    registerStorageHandlers();
+    registerAIProxyHandlers();
+    createMenu();
+    createWindow();
+
+    // 启动自动备份（每 5 分钟备份一次所有项目）
+    startAutoBackup();
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    });
+  });
+}
 
 // 应用退出前清理
 app.on('before-quit', () => {
@@ -942,6 +1067,11 @@ app.on('before-quit', () => {
     clearInterval(autoBackupTimer);
     autoBackupTimer = null;
   }
+  // 中止所有进行中的 AI 请求，避免 fetch 句柄悬挂
+  for (const controller of aiAbortControllers.values()) {
+    try { controller.abort(); } catch {}
+  }
+  aiAbortControllers.clear();
 });
 
 function startAutoBackup() {
@@ -974,7 +1104,8 @@ async function runAutoBackup(): Promise<void> {
     try {
       const exists = await fs.access(backupDir).then(() => true).catch(() => false);
       if (!exists) {
-        await copyDir(projectDir, backupDir);
+        // 使用 fs.cp 递归并发复制，替代阻塞主进程的 copyDir 串行递归
+        await fs.cp(projectDir, backupDir, { recursive: true });
       }
     } catch (err) {
       console.warn(`Backup failed for project ${projectId}:`, err);

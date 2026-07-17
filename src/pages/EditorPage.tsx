@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ChevronLeft,
@@ -55,7 +55,6 @@ export default function EditorPage() {
   const [showConflictPanel, setShowConflictPanel] = useState(false);
   const [leftPanelTab, setLeftPanelTab] = useState<'outline' | 'polish'>('outline');
   const [showTour, setShowTour] = useState(false);
-  const activeNav = useRef(false);
 
   // O4: 引导步骤。prepare 回调在进入该步前自动展开/激活目标面板，
   // 避免面板收起时 getBoundingClientRect 返回 0 宽高导致引导跳过该步。
@@ -107,7 +106,7 @@ export default function EditorPage() {
         setRightPanelTab('materials');
       },
     },
-  ], [setLeftPanelCollapsed, setRightPanelCollapsed, setRightPanelTab]);
+  ], []);
 
   // 注册全局快捷键：Ctrl+S 保存快照 + Ctrl+K 打开全局搜索
   // setShowSearch 是 useState setter，引用稳定，useMemo 空依赖即可
@@ -121,22 +120,39 @@ export default function EditorPage() {
   ], []);
   useAppHotkeys(extraHotkeys);
 
+  // openProject 竞态守卫：快速切换项目时，旧请求 await 完成后通过 id 比对丢弃过期结果
+  const openRequestId = useRef(0);
+  // 标记 projects 是否已加载完成，用于区分“加载中”与“项目不存在”
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
+
   useEffect(() => {
     if (!projectId) return;
-    loadProjects();
-    openProject(projectId);
-    activeNav.current = true;
+    const id = ++openRequestId.current;
+    setProjectsLoaded(false);
+    (async () => {
+      try {
+        await loadProjects();
+        if (id !== openRequestId.current) return;
+        await openProject(projectId);
+        if (id !== openRequestId.current) return;
+      } catch (e) {
+        console.error('加载项目失败:', e);
+      }
+      if (id !== openRequestId.current) return;
+      setProjectsLoaded(true);
+    })();
   }, [projectId, loadProjects, openProject]);
 
   const currentProject = projects.find(p => p.id === projectId);
 
-  // 首次进入编辑器时触发交互式引导
+  // 首次进入编辑器时触发交互式引导。依赖 currentProject?.id 而非 currentProject 对象引用，
+  // 避免编辑/保存导致 currentProject 引用变化时重复触发
   useEffect(() => {
     if (!currentProject) return;
     if (localStorage.getItem('has_seen_editor_tour')) return;
     const timer = setTimeout(() => setShowTour(true), 500);
     return () => clearTimeout(timer);
-  }, [currentProject]);
+  }, [currentProject?.id]);
 
   const handleTourComplete = () => {
     localStorage.setItem('has_seen_editor_tour', 'true');
@@ -148,24 +164,26 @@ export default function EditorPage() {
     setShowTour(false);
   };
 
-  const rightPanelContent = useCallback(() => {
-    switch (rightPanelTab) {
-      case 'ai': return <AIPanel />;
-      case 'characters': return <CharactersPanel />;
-      case 'settings': return <SettingsPanel />;
-      case 'foreshadows': return <ForeshadowPanel />;
-      case 'materials': return <MaterialsPanel />;
-      default: return <AIPanel />;
-    }
-  }, [rightPanelTab]);
-
 
 
   if (!currentProject) {
+    if (!projectsLoaded) {
+      return (
+        <div className="h-screen w-screen flex items-center justify-center bg-ink-950">
+          <div className="text-ink-400">加载中...</div>
+        </div>
+      );
+    }
     return (
-      <div className="h-screen w-screen flex items-center justify-center bg-ink-950">
-      <div className="text-ink-400">加载中...</div>
-    </div>
+      <div className="h-screen w-screen flex flex-col items-center justify-center bg-ink-950 gap-4">
+        <div className="text-ink-400">项目不存在</div>
+        <button
+          onClick={() => navigate('/')}
+          className="btn btn-primary"
+        >
+          返回首页
+        </button>
+      </div>
     );
   }
 
@@ -207,7 +225,10 @@ export default function EditorPage() {
             <Search className="w-4 h-4" />
           </button>
           <button
-            onClick={() => setShowVersionPanel(!showVersionPanel)}
+            onClick={() => {
+              setShowVersionPanel(v => !v);
+              setShowConflictPanel(false);
+            }}
             data-tour="version-history"
             className={`p-1.5 rounded-md transition-colors ${
               showVersionPanel
@@ -219,7 +240,10 @@ export default function EditorPage() {
             <History className="w-4 h-4" />
           </button>
           <button
-            onClick={() => setShowConflictPanel(!showConflictPanel)}
+            onClick={() => {
+              setShowConflictPanel(c => !c);
+              setShowVersionPanel(false);
+            }}
             className={`p-1.5 rounded-md transition-colors ${
               showConflictPanel
                 ? 'text-amber-400 bg-amber-400/10'
@@ -363,7 +387,16 @@ export default function EditorPage() {
 
           {/* Panel Content */}
           <div className="flex-1 overflow-y-auto">
-            {rightPanelContent()}
+            {(() => {
+              switch (rightPanelTab) {
+                case 'ai': return <AIPanel />;
+                case 'characters': return <CharactersPanel />;
+                case 'settings': return <SettingsPanel />;
+                case 'foreshadows': return <ForeshadowPanel />;
+                case 'materials': return <MaterialsPanel />;
+                default: return <AIPanel />;
+              }
+            })()}
           </div>
         </aside>
 
@@ -381,7 +414,7 @@ export default function EditorPage() {
       {/* Status Bar */}
       <footer className="relative z-20 h-7 border-t border-ink-800/50 flex items-center justify-between px-4 bg-ink-900/80 backdrop-blur-sm">
         <div className="flex items-center gap-4 text-xs text-ink-500">
-          <span>共 {chapters.filter(c => c.level === 2).length} 章</span>
+          <span>共 {chapters.filter(c => c.levelType === 'chapter').length} 章</span>
           <span>{currentProject.totalWords.toLocaleString()} 字</span>
         </div>
         <div className="flex items-center gap-4 text-xs text-ink-500">

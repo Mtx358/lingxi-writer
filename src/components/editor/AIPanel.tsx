@@ -1,10 +1,11 @@
 import DOMPurify from 'dompurify';
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Sparkles, Send, SlidersHorizontal, X, Check, RefreshCw, ChevronDown, UserRound, Wifi, Loader2 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { useClickOutside } from '@/hooks/useClickOutside';
 import { aiService, type StreamHandler } from '@/utils/aiService';
 import { toast } from '@/hooks/useToast';
+import { sanitizeAiHtml } from '@/hooks/useEditorAI';
 import {
   AI_CONTEXT_AIPANEL_CONTINUATION_CHARS,
   AI_CONTEXT_EXPAND_CHARS,
@@ -19,7 +20,13 @@ export default function AIPanel() {
   const [showSettings, setShowSettings] = useState(false);
   const [showExpandMenu, setShowExpandMenu] = useState(false);
   const expandMenuRef = useRef<HTMLDivElement>(null);
-  useClickOutside(expandMenuRef, () => setShowExpandMenu(false), showExpandMenu);
+  const closeExpandMenu = useCallback(() => setShowExpandMenu(false), []);
+  useClickOutside(expandMenuRef, closeExpandMenu, showExpandMenu);
+  // AbortController：用于中止进行中的流式 AI 请求，组件卸载时统一 abort
+  const abortRef = useRef<AbortController | null>(null);
+  // 防抖：文本类 AI 设置（baseUrl/model/apiKey）输入时累积更新，300ms 后批量写入 store
+  const debouncedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingUpdatesRef = useRef<Partial<AISettings>>({});
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
@@ -36,8 +43,27 @@ export default function AIPanel() {
     aiService.updateSettings(aiSettings);
   };
 
+  // 文本类设置防抖写入：合并短时间内多次输入，避免每次按键都触发 store 更新与持久化
+  const debouncedUpdateAISettings = useCallback((updates: Partial<AISettings>) => {
+    pendingUpdatesRef.current = { ...pendingUpdatesRef.current, ...updates };
+    if (debouncedTimerRef.current) clearTimeout(debouncedTimerRef.current);
+    debouncedTimerRef.current = setTimeout(() => {
+      updateAISettings(pendingUpdatesRef.current);
+      pendingUpdatesRef.current = {};
+    }, 300);
+  }, [updateAISettings]);
+
+  // 组件卸载时中止进行中的 AI 请求并清理防抖定时器，防止卸载后 setState
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      if (debouncedTimerRef.current) clearTimeout(debouncedTimerRef.current);
+    };
+  }, []);
+
   const handleGenerateContinuation = async () => {
     if (!currentChapterId || !currentChapter || isGenerating) return;
+    abortRef.current = new AbortController();
     setIsGenerating(true);
     setStreamingContent('');
     syncSettings();
@@ -61,18 +87,22 @@ export default function AIPanel() {
         currentChapter.summary,
         characters,
         aiSettings.style,
-        handler
+        handler,
+        abortRef.current.signal
       );
 
-      const store = useAppStore.getState();
-      store.clearAISuggestions();
-      store.addAISuggestion({
-        type: 'continue',
-        title: 'AI 续写',
-        content,
-        reasoning: '基于当前章节上下文、角色设定和风格偏好由 AI 生成，并经过真人化处理。',
-        contextUsed: ['当前章节末尾', '角色设定', '风格偏好', '章节概要'],
-      });
+      // 被用户主动中止时不写入建议，避免把残缺内容加入列表
+      if (!abortRef.current?.signal.aborted) {
+        const store = useAppStore.getState();
+        store.clearAISuggestions();
+        store.addAISuggestion({
+          type: 'continue',
+          title: 'AI 续写',
+          content,
+          reasoning: '基于当前章节上下文、角色设定和风格偏好由 AI 生成，并经过真人化处理。',
+          contextUsed: ['当前章节末尾', '角色设定', '风格偏好', '章节概要'],
+        });
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error('AI continuation error:', e);
@@ -80,11 +110,13 @@ export default function AIPanel() {
     } finally {
       setIsGenerating(false);
       setStreamingContent('');
+      abortRef.current = null;
     }
   };
 
   const handleExpand = async (type: 'detail' | 'dialogue' | 'environment' | 'psychology') => {
     if (!currentChapterId || !currentChapter || isGenerating) return;
+    abortRef.current = new AbortController();
     setIsGenerating(true);
     setStreamingContent('');
     setShowExpandMenu(false);
@@ -105,7 +137,7 @@ export default function AIPanel() {
         },
       };
 
-      const content = await aiService.expandTextStream(selectedText, type, handler);
+      const content = await aiService.expandTextStream(selectedText, type, handler, abortRef.current.signal);
 
       const typeMap: Record<typeof type, string> = {
         detail: '丰富细节',
@@ -114,15 +146,17 @@ export default function AIPanel() {
         psychology: '心理活动',
       };
 
-      const store = useAppStore.getState();
-      store.clearAISuggestions();
-      store.addAISuggestion({
-        type: 'expand',
-        title: `扩写：${typeMap[type]}`,
-        content,
-        reasoning: `从${typeMap[type]}的角度扩展原文，让场景更立体。文字经过真人化处理。`,
-        contextUsed: ['选中文本', '扩写方向', '真人写作风格'],
-      });
+      if (!abortRef.current?.signal.aborted) {
+        const store = useAppStore.getState();
+        store.clearAISuggestions();
+        store.addAISuggestion({
+          type: 'expand',
+          title: `扩写：${typeMap[type]}`,
+          content,
+          reasoning: `从${typeMap[type]}的角度扩展原文，让场景更立体。文字经过真人化处理。`,
+          contextUsed: ['选中文本', '扩写方向', '真人写作风格'],
+        });
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error('AI expand error:', e);
@@ -130,11 +164,13 @@ export default function AIPanel() {
     } finally {
       setIsGenerating(false);
       setStreamingContent('');
+      abortRef.current = null;
     }
   };
 
   const handlePolish = async () => {
     if (!currentChapterId || !currentChapter || isGenerating) return;
+    abortRef.current = new AbortController();
     setIsGenerating(true);
     setStreamingContent('');
     syncSettings();
@@ -154,17 +190,19 @@ export default function AIPanel() {
         },
       };
 
-      const content = await aiService.polishTextStream(selectedText, aiSettings.style, handler);
+      const content = await aiService.polishTextStream(selectedText, aiSettings.style, handler, abortRef.current.signal);
 
-      const store = useAppStore.getState();
-      store.clearAISuggestions();
-      store.addAISuggestion({
-        type: 'polish',
-        title: '润色优化',
-        content,
-        reasoning: '基于整体文风一致性和表达效果进行润色，在保留原意的基础上提升文学性和自然度。',
-        contextUsed: ['选中文本', '全书风格', '角色语气特点', '真人写作质感'],
-      });
+      if (!abortRef.current?.signal.aborted) {
+        const store = useAppStore.getState();
+        store.clearAISuggestions();
+        store.addAISuggestion({
+          type: 'polish',
+          title: '润色优化',
+          content,
+          reasoning: '基于整体文风一致性和表达效果进行润色，在保留原意的基础上提升文学性和自然度。',
+          contextUsed: ['选中文本', '全书风格', '角色语气特点', '真人写作质感'],
+        });
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error('AI polish error:', e);
@@ -172,12 +210,15 @@ export default function AIPanel() {
     } finally {
       setIsGenerating(false);
       setStreamingContent('');
+      abortRef.current = null;
     }
   };
 
   const handleSwitchPerspective = async () => {
     if (!currentChapterId || !currentChapter || characters.length === 0) return;
+    abortRef.current = new AbortController();
     setIsGenerating(true);
+    setStreamingContent('');
     syncSettings();
 
     try {
@@ -185,15 +226,19 @@ export default function AIPanel() {
       const plainText = currentChapter.content.replace(/<[^>]*>/g, '');
       const suggestion = await aiService.switchPerspective(plainText.slice(-AI_CONTEXT_PERSPECTIVE_CHARS), mainChar.name);
 
-      const store = useAppStore.getState();
-      store.clearAISuggestions();
-      store.addAISuggestion(suggestion);
+      if (!abortRef.current?.signal.aborted) {
+        const store = useAppStore.getState();
+        store.clearAISuggestions();
+        store.addAISuggestion(suggestion);
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error('AI switch perspective error:', e);
       toast.error('换视角失败', msg);
     } finally {
       setIsGenerating(false);
+      setStreamingContent('');
+      abortRef.current = null;
     }
   };
 
@@ -295,7 +340,7 @@ export default function AIPanel() {
                   <input
                     type="text"
                     value={aiSettings.baseUrl || ''}
-                    onChange={(e) => updateAISettings({ baseUrl: e.target.value })}
+                    onChange={(e) => debouncedUpdateAISettings({ baseUrl: e.target.value })}
                     placeholder={
                       aiSettings.provider === 'local' ? 'http://localhost:11434' :
                       aiSettings.provider === 'deepseek' ? 'https://api.deepseek.com' :
@@ -310,7 +355,7 @@ export default function AIPanel() {
                   <input
                     type="text"
                     value={aiSettings.model || ''}
-                    onChange={(e) => updateAISettings({ model: e.target.value })}
+                    onChange={(e) => debouncedUpdateAISettings({ model: e.target.value })}
                     placeholder={
                       aiSettings.provider === 'local' ? 'qwen2.5:7b' :
                       aiSettings.provider === 'deepseek' ? 'deepseek-chat' :
@@ -326,7 +371,7 @@ export default function AIPanel() {
                     <input
                       type="password"
                       value={aiSettings.apiKey || ''}
-                      onChange={(e) => updateAISettings({ apiKey: e.target.value })}
+                    onChange={(e) => debouncedUpdateAISettings({ apiKey: e.target.value })}
                       placeholder={aiSettings.provider === 'deepseek' ? 'sk-...' : 'sk-...'}
                       className="w-full px-2 py-1 text-xs bg-ink-700/50 text-ink-200 border border-ink-600/50 rounded focus:outline-none focus:border-amber-400/50"
                     />
@@ -559,8 +604,7 @@ export default function AIPanel() {
               </span>
               <button
                 onClick={() => {
-                  setIsGenerating(false);
-                  setStreamingContent('');
+                  abortRef.current?.abort();
                 }}
                 className="p-0.5 text-ink-500 hover:text-ink-300"
               >
@@ -569,7 +613,7 @@ export default function AIPanel() {
             </div>
             <div
               className="text-sm text-ink-300 max-h-40 overflow-y-auto writing-font leading-relaxed"
-              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(streamingContent) }}
+              dangerouslySetInnerHTML={{ __html: sanitizeAiHtml(streamingContent) }}
             />
           </div>
         )}
@@ -598,7 +642,7 @@ export default function AIPanel() {
 
               <div
                 className="text-sm text-ink-300 mb-3 max-h-40 overflow-y-auto writing-font leading-relaxed"
-                dangerouslySetInnerHTML={{ __html: suggestion.content }}
+                dangerouslySetInnerHTML={{ __html: sanitizeAiHtml(suggestion.content) }}
               />
 
               <div className="flex items-start gap-2 mb-3 p-2 bg-ink-800/50 rounded text-[11px] text-ink-500">

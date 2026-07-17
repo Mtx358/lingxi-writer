@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { AlertTriangle, CheckCircle, X, ChevronRight, Info, AlertCircle, XCircle } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { conflictDetector } from '@/utils/conflictDetector';
@@ -34,19 +34,34 @@ export default function ConflictPanel({ onClose }: ConflictPanelProps) {
 
   const currentChapter = chapters.find(c => c.id === currentChapterId);
 
+  // mountedRef 守卫：两个 scan 函数都有 setTimeout 假扫描延迟，
+  // 组件卸载后回调不应再 setState，避免内存泄漏与 React 警告。
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   const handleScan = async () => {
     if (!currentChapter) return;
     setScanning(true);
     try {
       await new Promise(resolve => setTimeout(resolve, 800));
-      // 扫描当前章节：临时仅检测当前章节，覆盖 store 中全书结果
+      if (!mountedRef.current) return;
+      // 扫描当前章节：merge 写入，仅替换当前章节的冲突，保留其他章节既有结果。
+      // 此前 setState({ conflicts: issues }) 会覆盖全书扫描结果。
       const { characters, settingItems } = useAppStore.getState();
       conflictDetector.setCharacters(characters);
       conflictDetector.setSettings(settingItems);
       const issues = conflictDetector.detectChapterConflicts(currentChapter);
-      useAppStore.setState({ conflicts: issues });
+      useAppStore.setState(s => ({
+        conflicts: [
+          ...s.conflicts.filter(i => i.chapterId !== currentChapter.id),
+          ...issues,
+        ],
+      }));
     } finally {
-      setScanning(false);
+      if (mountedRef.current) setScanning(false);
     }
   };
 
@@ -54,9 +69,10 @@ export default function ConflictPanel({ onClose }: ConflictPanelProps) {
     setScanning(true);
     try {
       await new Promise(resolve => setTimeout(resolve, 1200));
+      if (!mountedRef.current) return;
       detectConflicts();
     } finally {
-      setScanning(false);
+      if (mountedRef.current) setScanning(false);
     }
   };
 
@@ -65,18 +81,18 @@ export default function ConflictPanel({ onClose }: ConflictPanelProps) {
   };
 
   const handleFix = (issue: ConflictIssue) => {
-    // 跳转到 AI 面板修复
+    // 当前为模板建议，未接入真实 AI 修复。文案明确为"查看修复建议模板"避免误导。
     addAISuggestion({
       type: 'fix',
-      title: `修复：${issue.description.slice(0, 20)}...`,
-      content: `<p>AI 建议的修改方案：</p>
+      title: `修复建议模板：${issue.description.slice(0, 20)}...`,
+      content: `<p>修复建议模板（非真实 AI 修复）：</p>
 <p>针对"${issue.description}"的问题，建议如下：</p>
 <ul>
 <li>${issue.suggestion}</li>
 <li>检查上下文，确保叙事视角一致</li>
 <li>统一相关术语和称谓</li>
 </ul>`,
-      reasoning: '基于全文风格一致性分析',
+      reasoning: '基于全文风格一致性分析（模板）',
       contextUsed: ['当前章节', '角色设定', '文风基准'],
     });
   };
@@ -228,7 +244,7 @@ export default function ConflictPanel({ onClose }: ConflictPanelProps) {
                           onClick={(e) => { e.stopPropagation(); handleFix(issue); }}
                           className="flex-1 py-1 text-[10px] bg-amber-400/10 text-amber-300 hover:bg-amber-400/20 rounded flex items-center justify-center gap-1"
                         >
-                          AI 修复
+                          查看修复建议模板
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); handleResolve(issue.id); }}

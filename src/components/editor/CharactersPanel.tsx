@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Plus, User, ChevronRight, Edit3, Trash2, Check, X } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { CHARACTER_ROLE_LABELS, DEFAULT_CHARACTER_ROLE, type Character, type CharacterRelationship } from '@/types';
@@ -49,6 +49,13 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
     Object.entries(char.profile || {}).forEach(([k, v]) => { d[k] = v ?? ''; });
     return d;
   });
+  // 当 char.profile 变化（外部修改、双向同步写入等）时同步 draft，
+  // 否则编辑器内显示的草稿会与 store 实际值脱节。
+  useEffect(() => {
+    const d: Record<string, string> = {};
+    Object.entries(char.profile || {}).forEach(([k, v]) => { d[k] = v ?? ''; });
+    setDraft(d);
+  }, [char.profile]);
   const [showAddField, setShowAddField] = useState(false);
   const [newKey, setNewKey] = useState('');
   const [addError, setAddError] = useState('');
@@ -74,8 +81,15 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
     return Array.from(used);
   }, [characters]);
 
+  // 从 store 取最新角色状态，避免使用闭包中的 char.profile/char.relationships
+  // 在快速连续修改多字段时被后一次覆盖前一次（store 已更新但闭包未刷新）。
+  const getLatestChar = (): Character | undefined =>
+    useAppStore.getState().characters.find(c => c.id === char.id);
+
   const commitField = (key: string, value: string) => {
-    updateCharacter(char.id, { profile: { ...char.profile, [key]: value } });
+    const latest = getLatestChar();
+    if (!latest) return;
+    updateCharacter(char.id, { profile: { ...latest.profile, [key]: value } });
   };
 
   const handleAddField = () => {
@@ -88,7 +102,9 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
       setAddError('该字段已存在');
       return;
     }
-    updateCharacter(char.id, { profile: { ...char.profile, [key]: '' } });
+    const latest = getLatestChar();
+    if (!latest) return;
+    updateCharacter(char.id, { profile: { ...latest.profile, [key]: '' } });
     setDraft(d => ({ ...d, [key]: '' }));
     setNewKey('');
     setAddError('');
@@ -96,8 +112,10 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
   };
 
   const handleDeleteField = (key: string) => {
+    const latest = getLatestChar();
+    if (!latest) return;
     const newProfile = Object.fromEntries(
-      Object.entries(char.profile || {}).filter(([k]) => k !== key)
+      Object.entries(latest.profile || {}).filter(([k]) => k !== key)
     );
     updateCharacter(char.id, { profile: newProfile });
     setDraft(d => {
@@ -115,17 +133,19 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
 
   const handleAddRelation = () => {
     if (!newRelationTarget || !newRelationType) return;
+    const latest = getLatestChar();
+    if (!latest) return;
     const newRel: CharacterRelationship = {
       targetId: newRelationTarget,
       type: newRelationType,
       description: newRelationDesc,
       intensity: newRelationIntensity,
     };
-    const updatedRels = [...(char.relationships || []), newRel];
+    const updatedRels = [...(latest.relationships || []), newRel];
     updateCharacter(char.id, { relationships: updatedRels });
 
-    // 双向同步：给目标角色添加反向关系
-    const targetChar = characters.find(c => c.id === newRelationTarget);
+    // 双向同步：给目标角色添加反向关系（同样从 store 取最新，避免闭包过期）
+    const targetChar = useAppStore.getState().characters.find(c => c.id === newRelationTarget);
     if (targetChar) {
       const reverseType = REVERSE_RELATIONSHIP_MAP[newRelationType] || newRelationType;
       const reverseRel: CharacterRelationship = {
@@ -150,14 +170,16 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
   };
 
   const handleDeleteRelation = (targetId: string, relType?: CharacterRelationship['type']) => {
+    const latest = getLatestChar();
+    if (!latest) return;
     // 未指定 type 时按 targetId 删除所有关系（向后兼容）；指定 type 时只删对应类型
     const updatedRels = relType
-      ? (char.relationships || []).filter(r => !(r.targetId === targetId && r.type === relType))
-      : (char.relationships || []).filter(r => r.targetId !== targetId);
+      ? (latest.relationships || []).filter(r => !(r.targetId === targetId && r.type === relType))
+      : (latest.relationships || []).filter(r => r.targetId !== targetId);
     updateCharacter(char.id, { relationships: updatedRels });
 
-    // 双向同步：删除目标角色的反向关系
-    const targetChar = characters.find(c => c.id === targetId);
+    // 双向同步：删除目标角色的反向关系（从 store 取最新）
+    const targetChar = useAppStore.getState().characters.find(c => c.id === targetId);
     if (targetChar) {
       const reverseType = relType ? (REVERSE_RELATIONSHIP_MAP[relType] || relType) : undefined;
       const targetUpdatedRels = reverseType
@@ -463,19 +485,19 @@ export default function CharactersPanel() {
 
                   {isSelected && !isEditing && (
                     <div className="ml-4 mt-1 mb-2 p-2 bg-ink-800/30 rounded text-xs space-y-2 animate-slide-down">
-                      {char.profile.personality && (
+                      {char.profile?.personality && (
                         <div>
                           <span className="text-ink-500">性格：</span>
                           <span className="text-ink-300">{char.profile.personality}</span>
                         </div>
                       )}
-                      {char.profile.motivation && (
+                      {char.profile?.motivation && (
                         <div>
                           <span className="text-ink-500">动机：</span>
                           <span className="text-ink-300">{char.profile.motivation}</span>
                         </div>
                       )}
-                      {char.profile.weakness && (
+                      {char.profile?.weakness && (
                         <div>
                           <span className="text-ink-500">弱点：</span>
                           <span className="text-ink-300">{char.profile.weakness}</span>

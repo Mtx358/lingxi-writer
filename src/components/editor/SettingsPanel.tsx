@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Plus, Globe, ChevronRight, BookOpen, Edit3, Trash2, Check, X } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import type { SettingItem } from '@/types';
@@ -85,6 +85,21 @@ export default function SettingsPanel() {
   const [newItemName, setNewItemName] = useState('');
   const [editingItem, setEditingItem] = useState<SettingItem | null>(null);
 
+  // 预先按 categoryId 分组，避免每个分类渲染时都 filter 全量 settingItems（O(n*m)）。
+  // 引用稳定，分类行未变化时不会触发重渲染。
+  const itemsByCategory = useMemo(() => {
+    const map = new Map<string, SettingItem[]>();
+    for (const item of settingItems) {
+      let arr = map.get(item.categoryId);
+      if (!arr) {
+        arr = [];
+        map.set(item.categoryId, arr);
+      }
+      arr.push(item);
+    }
+    return map;
+  }, [settingItems]);
+
   const handleAddCategory = () => {
     if (!newCatName.trim()) return;
     addSettingCategory(newCatName.trim(), 'folder');
@@ -142,14 +157,14 @@ export default function SettingsPanel() {
         ) : (
           <div className="p-1.5 space-y-1">
             {settingCategories.map(cat => {
-              const items = settingItems.filter(i => i.categoryId === cat.id);
+              const items = itemsByCategory.get(cat.id) ?? [];
               const isExpanded = expandedCat === cat.id;
 
               return (
                 <div key={cat.id}>
                   <div
                     onClick={() => setExpandedCat(isExpanded ? null : cat.id)}
-                    className="flex items-center gap-2 p-2 rounded cursor-pointer hover:bg-ink-800/50 transition-colors"
+                    className="group flex items-center gap-2 p-2 rounded cursor-pointer hover:bg-ink-800/50 transition-colors"
                   >
                     <ChevronRight className={`w-4 h-4 text-ink-500 transition-transform flex-shrink-0 ${
                       isExpanded ? 'rotate-90' : ''
@@ -180,11 +195,34 @@ export default function SettingsPanel() {
                             value={newItemName}
                             onChange={(e) => setNewItemName(e.target.value)}
                             onKeyDown={(e) => e.key === 'Enter' && handleAddItem(cat.id)}
-                            onBlur={() => { setAddingItemTo(null); setNewItemName(''); }}
+                            onBlur={() => {
+                              // 失焦时若已输入内容，则视为确认提交；否则取消。
+                              // 此前无条件清空会吞掉用户输入但未按 Enter 的提交。
+                              if (newItemName.trim()) {
+                                handleAddItem(cat.id);
+                              } else {
+                                setAddingItemTo(null);
+                                setNewItemName('');
+                              }
+                            }}
                             placeholder="名称..."
                             className="flex-1 px-2 py-1 bg-ink-800 border border-ink-700 rounded text-xs text-ink-200 outline-none focus:border-amber-400/50"
                             autoFocus
                           />
+                          <button
+                            onMouseDown={(e) => { e.preventDefault(); handleAddItem(cat.id); }}
+                            className="px-2 py-1 bg-amber-400/10 text-amber-300 hover:bg-amber-400/20 rounded text-xs"
+                            title="添加"
+                          >
+                            <Plus className="w-3 h-3" />
+                          </button>
+                          <button
+                            onMouseDown={(e) => { e.preventDefault(); setAddingItemTo(null); setNewItemName(''); }}
+                            className="px-2 py-1 bg-ink-700/50 text-ink-400 hover:bg-ink-700 rounded text-xs"
+                            title="取消"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
                         </div>
                       )}
                       {items.map(item => {

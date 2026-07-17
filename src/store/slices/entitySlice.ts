@@ -20,6 +20,20 @@ type EntitySlice = Pick<AppState,
   | 'addForeshadow' | 'updateForeshadow' | 'deleteForeshadow' | 'recomputeForeshadowMentions'
   | 'addMaterial' | 'updateMaterial' | 'deleteMaterial'>;
 
+// 模块级缓存：chapterId -> { html, plain }，避免同一章节被多个伏笔重复去 HTML。
+// F 个伏笔 × C 个章节时，去 HTML 至多执行 C 次（仅在章节内容变更时增量更新），而非 F*C 次。
+const chapterPlainTextCache = new Map<string, { html: string; plain: string }>();
+
+const getChapterPlainText = (chapterId: string, html: string): string => {
+  const cached = chapterPlainTextCache.get(chapterId);
+  if (cached && cached.html === html) {
+    return cached.plain; // 章节内容未变，复用已缓存的纯文本
+  }
+  const plain = (html || '').replace(/<[^>]*>/g, '');
+  chapterPlainTextCache.set(chapterId, { html, plain });
+  return plain;
+};
+
 export const createEntitySlice: StateCreator<AppState, [], [], EntitySlice> = (set, get) => ({
   characters: [],
   settingCategories: [],
@@ -211,21 +225,32 @@ export const createEntitySlice: StateCreator<AppState, [], [], EntitySlice> = (s
       .sort((a, b) => a.order - b.order);
     if (flatChapters.length === 0) return;
 
+    // 清理已被删除章节的缓存条目，避免缓存无限增长
+    const currentChapterIds = new Set(chapters.map(c => c.id));
+    for (const id of chapterPlainTextCache.keys()) {
+      if (!currentChapterIds.has(id)) chapterPlainTextCache.delete(id);
+    }
+
     const currentIndex = currentChapterId
       ? flatChapters.findIndex(c => c.id === currentChapterId)
       : flatChapters.length - 1;
     const effectiveCurrentIndex = currentIndex === -1 ? flatChapters.length - 1 : currentIndex;
+
+    // 预取 0..effectiveCurrentIndex 范围内每章的纯文本（命中缓存时 O(1)），供所有伏笔复用
+    const chapterTexts: string[] = [];
+    for (let i = 0; i <= effectiveCurrentIndex; i++) {
+      chapterTexts.push(getChapterPlainText(flatChapters[i].id, flatChapters[i].content || ''));
+    }
 
     let changed = false;
     const updatedForeshadows = foreshadows.map(f => {
       const title = (f.title || '').trim();
       if (!title) return f;
 
-      // 从当前章节向前找最晚一次提及
+      // 从当前章节向前找最晚一次提及，复用已缓存的纯文本
       let lastMentionIndex = -1;
       for (let i = effectiveCurrentIndex; i >= 0; i--) {
-        const text = (flatChapters[i].content || '').replace(/<[^>]*>/g, '');
-        if (text.includes(title)) {
+        if (chapterTexts[i].includes(title)) {
           lastMentionIndex = i;
           break;
         }

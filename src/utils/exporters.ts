@@ -148,7 +148,8 @@ function toBase64(data: ArrayBuffer | Uint8Array): string {
   const chunkSize = 0x8000;
   for (let i = 0; i < bytes.length; i += chunkSize) {
     const chunk = bytes.subarray(i, i + chunkSize);
-    binary += String.fromCharCode.apply(null, Array.from(chunk));
+    // 直接将 Uint8Array 传给 fromCharCode.apply，免去 Array.from 的额外复制
+    binary += String.fromCharCode.apply(null, chunk as unknown as number[]);
   }
   return btoa(binary);
 }
@@ -555,7 +556,11 @@ export function generateHtml(data: ExportData): string {
   const { project, chapters, includeToc, platform } = data;
   const config = getPlatformConfig(platform);
 
-  let html = `<!DOCTYPE html>
+  // 用数组收集片段后一次性 join，避免循环中 html += 反复拼接大字符串导致的 O(n²) 开销。
+  // 注：generateHtml 保持同步签名（调用方 ExportPage 未 await），无法像 DOCX/PDF/EPUB 路径
+  // 那样通过 await Promise.resolve() 让出事件循环；数组拼接已显著降低单次导出的主线程开销。
+  const parts: string[] = [];
+  parts.push(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
@@ -627,51 +632,51 @@ export function generateHtml(data: ExportData): string {
     }
   </style>
 </head>
-<body>`;
+<body>`);
 
   if (config.frontMatter) {
-    html += `
+    parts.push(`
   <div class="title-page">
     <h1>${escapeXml(project.title || '未命名作品')}</h1>
     ${project.description ? `<p class="subtitle">${escapeXml(project.description)}</p>` : ''}
-  </div>`;
+  </div>`);
   }
 
   if (includeToc) {
-    html += `
+    parts.push(`
   <h2>目录</h2>
-  <ul class="toc">`;
+  <ul class="toc">`);
     chapters.forEach((ch, idx) => {
       const title = config.includeChapterNumber ? `${idx + 1}. ${ch.title}` : ch.title;
-      html += `
-    <li><a href="#ch-${ch.id}">${escapeXml(title)}</a></li>`;
+      parts.push(`
+    <li><a href="#ch-${ch.id}">${escapeXml(title)}</a></li>`);
     });
-    html += `
-  </ul>`;
+    parts.push(`
+  </ul>`);
   }
 
   chapters.forEach((ch, idx) => {
     const title = config.includeChapterNumber ? `${idx + 1}. ${ch.title}` : ch.title;
-    html += `
-  <h1 id="ch-${ch.id}">${escapeXml(title)}</h1>`;
+    parts.push(`
+  <h1 id="ch-${ch.id}">${escapeXml(title)}</h1>`);
 
     if (ch.summary) {
-      html += `
-  <p class="summary">${escapeXml(ch.summary)}</p>`;
+      parts.push(`
+  <p class="summary">${escapeXml(ch.summary)}</p>`);
     }
 
     const paragraphs = htmlToParagraphs(ch.content);
     paragraphs.forEach(p => {
-      html += `
-  <p>${escapeXml(p)}</p>`;
+      parts.push(`
+  <p>${escapeXml(p)}</p>`);
     });
   });
 
-  html += `
+  parts.push(`
 </body>
-</html>`;
+</html>`);
 
-  return html;
+  return parts.join('');
 }
 
 export async function generateEpub(data: ExportData): Promise<string> {

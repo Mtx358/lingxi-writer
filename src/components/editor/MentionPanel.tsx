@@ -16,6 +16,12 @@ export default function MentionPanel({ editor, position, onClose }: MentionPanel
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [activeTab, setActiveTab] = useState<'all' | 'characters' | 'settings'>('all');
   const inputRef = useRef<HTMLInputElement>(null);
+  // selectedIndex 的 ref 镜像：键盘 effect 只依赖 [editor, onClose, filteredItems]，
+  // 通过 ref 读取最新选中索引，避免每次按键移动都重新订阅/解绑 window keydown 监听器。
+  const selectedIndexRef = useRef(0);
+  useEffect(() => {
+    selectedIndexRef.current = selectedIndex;
+  }, [selectedIndex]);
 
   const characters = useAppStore(s => s.characters);
   const settingItems = useAppStore(s => s.settingItems);
@@ -66,6 +72,14 @@ export default function MentionPanel({ editor, position, onClose }: MentionPanel
     return items;
   }, [characters, settingItems, activeTab, query]);
 
+  // filteredItems 变化时若当前 selectedIndex 越界则 clamp 回 0，
+  // 避免列表缩短后选中索引指向不存在的项。
+  useEffect(() => {
+    if (selectedIndex > filteredItems.length - 1) {
+      setSelectedIndex(0);
+    }
+  }, [filteredItems, selectedIndex]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!editor) return;
@@ -85,10 +99,10 @@ export default function MentionPanel({ editor, position, onClose }: MentionPanel
         e.preventDefault();
         e.stopImmediatePropagation();
         setSelectedIndex(prev => Math.max(prev - 1, 0));
-      } else if (e.key === 'Enter' && filteredItems[selectedIndex]) {
+      } else if (e.key === 'Enter' && filteredItems[selectedIndexRef.current]) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        selectItem(filteredItems[selectedIndex]);
+        selectItem(filteredItems[selectedIndexRef.current]);
       } else if (e.key === 'Tab') {
         // O3: Tab 在浮层内仅用于切换焦点，不允许离开浮层触发编辑器
         e.preventDefault();
@@ -99,9 +113,11 @@ export default function MentionPanel({ editor, position, onClose }: MentionPanel
     // O3: 捕获阶段优先于 prosemirror 的 bubble 阶段监听器
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
+    // 通过 selectedIndexRef 读取最新选中索引，effect 无需依赖 selectedIndex，
+    // 避免每次按键移动都重新订阅/解绑 window keydown 监听器。
     // selectItem 依赖 editor/onClose，不会变化，故省略
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, onClose, filteredItems, selectedIndex]);
+  }, [editor, onClose, filteredItems]);
 
   const selectItem = (item: { id: string; label: string; type: string }) => {
     if (!editor) return;

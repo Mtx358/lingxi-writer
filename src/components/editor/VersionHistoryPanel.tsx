@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { History, Save, Clock, RotateCcw, X, Check, ChevronRight, FileText, Trash2, Loader2 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import type { ChapterVersion } from '@/types';
@@ -28,25 +28,48 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
   const [versionName, setVersionName] = useState('');
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [isComputingDiff, setIsComputingDiff] = useState(false);
+  // 记录计算 diff 时的 currentChapter.content 快照（用长度+前缀作为简易 hash），
+  // 应用更改前比对，若章节内容已被外部修改则提示用户重新选择版本，避免基于过期 diff 写入。
+  const [diffContentHash, setDiffContentHash] = useState<string>('');
 
   const currentChapter = chapters.find(c => c.id === currentChapterId);
   const chapterVersions = currentChapterId ? (versions[currentChapterId] || []) : [];
-  const sortedVersions = [...chapterVersions].sort((a, b) =>
+  const sortedVersions = useMemo(() => [...chapterVersions].sort((a, b) =>
     new Date(b.snapshotTime).getTime() - new Date(a.snapshotTime).getTime()
-  );
+  ), [chapterVersions]);
+
+  // mountedRef 守卫：组件卸载后 setTimeout 回调不再 setState，避免内存泄漏与 React 警告
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     if (selectedVersion && currentChapter) {
       setIsComputingDiff(true);
       // 用 setTimeout 让出一帧，避免长计算阻塞 UI
       const timer = setTimeout(() => {
+        if (!mountedRef.current) return;
         // 单一数据源：仅计算 HTML 块级 diff，展示与应用共享同一套索引
         const htmlDiff = computeHtmlBlockDiff(selectedVersion.content, currentChapter.content);
         setHtmlDiffResult(htmlDiff);
         setRejectedBlocks(new Set());
+        // 记录计算 diff 时的内容快照，供 handleApplyChanges 校验是否过期
+        setDiffContentHash(`${currentChapter.content.length}:${currentChapter.content.slice(0, 64)}`);
         setIsComputingDiff(false);
       }, 30);
-      return () => clearTimeout(timer);
+      return () => {
+        clearTimeout(timer);
+        // 条件变化或卸载时复位加载态，避免边界场景下 isComputingDiff 卡在 true
+        if (mountedRef.current) setIsComputingDiff(false);
+      };
+    }
+    // 条件不满足（无选中版本或无章节）时无条件复位，确保不会卡在 loading 态
+    if (mountedRef.current) {
+      setIsComputingDiff(false);
+      setHtmlDiffResult([]);
+      setRejectedBlocks(new Set());
     }
   }, [selectedVersion, currentChapter]);
 
@@ -94,6 +117,15 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
       return;
     }
 
+    // 校验 diff 是否过期：比对当前章节内容与计算 diff 时的快照 hash。
+    // 若章节内容已被外部编辑（如编辑器内继续输入），基于旧 diff 应用会破坏内容。
+    const currentHash = `${currentChapter.content.length}:${currentChapter.content.slice(0, 64)}`;
+    if (currentHash !== diffContentHash) {
+      alert('章节内容在计算差异后已发生变化，差异结果已过期。\n请重新选择版本以重新计算差异后再应用。');
+      setSelectedVersion(null);
+      return;
+    }
+
     // 操作前自动保存当前版本，确保可回滚
     saveVersion(currentChapterId, '应用更改前自动备份');
 
@@ -106,11 +138,18 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
     setSelectedVersion(null);
   };
 
-  const stats = {
-    added: htmlDiffResult.filter(d => d.type === 'added' || d.type === 'modified').length,
-    removed: htmlDiffResult.filter(d => d.type === 'removed' || d.type === 'modified').length,
-    unchanged: htmlDiffResult.filter(d => d.type === 'unchanged').length,
-  };
+  // 分开统计四类，避免 modified 被同时计入 added 和 removed 导致数值失真。
+  // 用 useMemo 包裹，仅随 htmlDiffResult 变化重算。
+  const stats = useMemo(() => {
+    let added = 0, removed = 0, modified = 0, unchanged = 0;
+    for (const d of htmlDiffResult) {
+      if (d.type === 'added') added++;
+      else if (d.type === 'removed') removed++;
+      else if (d.type === 'modified') modified++;
+      else if (d.type === 'unchanged') unchanged++;
+    }
+    return { added, removed, modified, unchanged };
+  }, [htmlDiffResult]);
 
   if (!currentChapter) {
     return (
@@ -268,6 +307,10 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
             <span className="flex items-center gap-1 text-red-400">
               <span className="w-2 h-2 rounded-full bg-red-400" />
               -{stats.removed}
+            </span>
+            <span className="flex items-center gap-1 text-amber-400">
+              <span className="w-2 h-2 rounded-full bg-amber-400" />
+              ~{stats.modified}
             </span>
             <span className="text-ink-500 ml-auto">
               {stats.unchanged} 段未变

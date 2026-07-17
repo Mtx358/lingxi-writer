@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useMemo } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { isOverlayOpen } from '@/utils/overlayState';
 
@@ -20,6 +20,9 @@ export function useGlobalHotkeys(hotkeys: HotkeyHandler[]) {
       // 避免在浮层中按 Ctrl+S/Ctrl+K 等组合键同时触发后台动作造成交互混乱。
       // 浮层自身的 Esc/方向键由其内部 keydown 监听器独立处理。
       if (isOverlayOpen()) return;
+      // 快捷键均需修饰键或 shift：无任何修饰键且无 shift 类快捷键时直接放行，
+      // 避免对每次普通按键都遍历整个 hotkeys 数组
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && hotkeys.every(h => !h.shift)) return;
       const target = e.target as HTMLElement;
       const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
 
@@ -30,7 +33,9 @@ export function useGlobalHotkeys(hotkeys: HotkeyHandler[]) {
         const altMatch = hotkey.alt ? e.altKey : !e.altKey;
 
         if (keyMatch && ctrlMatch && shiftMatch && altMatch) {
-          if (isInput && !['k', 's', 'escape'].includes(hotkey.key.toLowerCase())) {
+          // 输入框内仅放行带 Ctrl 的 k/s 快捷键（保存/搜索），其余组合键在输入态下不触发，
+          // 白名单需同时校验修饰键，避免无修饰键的 'k'/'s'/'escape' 误穿透
+          if (isInput && !(hotkey.ctrl && ['k', 's'].includes(hotkey.key.toLowerCase()))) {
             continue;
           }
           // 必须调用 preventDefault：Ctrl+S（浏览器保存对话框）、Ctrl+K（部分浏览器聚焦地址栏/搜索栏）
@@ -60,7 +65,9 @@ export function useAppHotkeys(extraHotkeys: HotkeyHandler[] = []) {
   const saveVersion = useAppStore(s => s.saveVersion);
   const currentChapterId = useAppStore(s => s.currentChapterId);
 
-  const hotkeys: HotkeyHandler[] = [
+  // 用 useMemo 稳定 hotkeys 数组引用，避免每次渲染重建数组导致
+  // handleKeyDown 依赖变化、keydown 监听器反复重注册
+  const hotkeys = useMemo<HotkeyHandler[]>(() => [
     {
       key: 's',
       ctrl: true,
@@ -72,7 +79,7 @@ export function useAppHotkeys(extraHotkeys: HotkeyHandler[] = []) {
       description: '保存快照 (Ctrl+S)',
     },
     ...extraHotkeys,
-  ];
+  ], [saveVersion, currentChapterId, extraHotkeys]);
 
   useGlobalHotkeys(hotkeys);
 }

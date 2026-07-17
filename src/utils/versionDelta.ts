@@ -22,9 +22,43 @@ import type { ChapterVersion } from '@/types';
  * 兼容性：delta 字段为 null/undefined 时按"完整内容"处理，旧文件可直接读取。
  */
 
-// 控制字符：确保不会出现在正常 HTML 文本中
+// 控制字符：作为 delta 各字段的分隔符。章节正文（HTML）理论上极少包含它们，
+// 但不能假设绝对不会出现，因此对 aMid/bMid 中的分隔符做转义。
 const SEP_MID = '\u0000';
 const SEP_PART = '\u0001';
+
+// 转义 aMid/bMid 中的分隔符（SQL 风格加倍：\u0000 → \u0000\u0000，\u0001 → \u0001\u0001）
+const escapeMid = (s: string): string =>
+  s.replace(/\u0000/g, '\u0000\u0000').replace(/\u0001/g, '\u0001\u0001');
+
+// 还原转义后的中间片段
+const unescapeMid = (s: string): string =>
+  s.replace(/\u0001\u0001/g, '\u0001').replace(/\u0000\u0000/g, '\u0000');
+
+// 在尊重加倍转义的前提下按 delimiter 分割：
+// delimiter 连续出现两次视为字面量（合并为一个），出现一次视为字段边界。
+function splitRespectingEscape(s: string, delimiter: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === delimiter) {
+      if (s[i + 1] === delimiter) {
+        current += delimiter; // 转义的字面量分隔符
+        i += 2;
+      } else {
+        parts.push(current);
+        current = '';
+        i += 1;
+      }
+    } else {
+      current += s[i];
+      i += 1;
+    }
+  }
+  parts.push(current);
+  return parts;
+}
 
 export interface StoredVersion {
   id: string;
@@ -50,21 +84,36 @@ function computeSimpleDiff(a: string, b: string): string {
   while (suffixLen < minLen - prefixLen && a[a.length - 1 - suffixLen] === b[b.length - 1 - suffixLen]) suffixLen++;
   const aMid = a.slice(prefixLen, a.length - suffixLen);
   const bMid = b.slice(prefixLen, b.length - suffixLen);
-  return `${prefixLen}${SEP_MID}${aMid}${SEP_PART}${bMid}${SEP_PART}${suffixLen}`;
+  // 转义中间片段中的分隔符，防止内容里的 \u0000/\u0001 破坏 delta 结构
+  return `${prefixLen}${SEP_MID}${escapeMid(aMid)}${SEP_PART}${escapeMid(bMid)}${SEP_PART}${suffixLen}`;
 }
 
-// 将 diff 应用到基线，重建出新版本内容
+// 将 diff 应用到基线，重建出新版本内容。delta 损坏时抛错而非静默回退，避免产生错误内容。
 function applySimpleDiff(base: string, delta: string): string {
   if (delta === '') return base;
-  const firstSplit = delta.split(SEP_MID);
-  if (firstSplit.length !== 2) return base; // 损坏的 delta，回退到基线
-  const prefixLen = parseInt(firstSplit[0], 10);
-  const secondSplit = firstSplit[1].split(SEP_PART);
-  if (secondSplit.length !== 3) return base;
-  // secondSplit[0] 为旧内容中被替换的片段，重建时不需要
-  const bMid = secondSplit[1];
-  const suffixLen = parseInt(secondSplit[2], 10);
-  if (Number.isNaN(prefixLen) || Number.isNaN(suffixLen)) return base;
+  // prefixLen 为纯数字，不会含 SEP_MID，因此第一个 SEP_MID 即 prefixLen 与 aMid 的边界
+  const sepMidIdx = delta.indexOf(SEP_MID);
+  if (sepMidIdx < 0) {
+    throw new Error('Invalid delta: missing SEP_MID boundary');
+  }
+  const prefixLen = parseInt(delta.slice(0, sepMidIdx), 10);
+  if (Number.isNaN(prefixLen) || prefixLen < 0) {
+    throw new Error('Invalid delta: invalid prefix length');
+  }
+  // 在尊重转义的前提下按 SEP_PART 拆分为 [aMid, bMid, suffixLen]
+  const parts = splitRespectingEscape(delta.slice(sepMidIdx + 1), SEP_PART);
+  if (parts.length !== 3) {
+    throw new Error('Invalid delta: expected 3 parts after SEP_MID');
+  }
+  // parts[0] 为旧内容被替换片段（重建不需要），parts[1] 为新内容片段
+  const bMid = unescapeMid(parts[1]);
+  const suffixLen = parseInt(parts[2], 10);
+  if (Number.isNaN(suffixLen) || suffixLen < 0) {
+    throw new Error('Invalid delta: invalid suffix length');
+  }
+  if (prefixLen + suffixLen > base.length) {
+    throw new Error('Invalid delta: length out of range for base');
+  }
   return base.slice(0, prefixLen) + bMid + base.slice(base.length - suffixLen);
 }
 

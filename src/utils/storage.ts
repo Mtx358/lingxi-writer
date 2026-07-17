@@ -10,8 +10,16 @@ const isQuotaError = (e: unknown): boolean => {
   return e instanceof Error && /quota/i.test(e.name);
 };
 
+// 模块级计数器，保证短时间批量调用也不会冲突
+let idCounter = 0;
+
 export const generateId = (): string => {
-  return Date.now().toString(36) + Math.random().toString(36).substr(2);
+  // 优先使用原生 UUID（唯一性最佳，且不依赖时间戳）
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // 回退：时间戳 + 随机 + 自增计数器，避免 .substr 废弃 API 与批量调用冲突
+  return Date.now().toString(36) + Math.random().toString(36).slice(2) + (idCounter++).toString(36);
 };
 
 export const formatDate = (date: string): string => {
@@ -82,7 +90,7 @@ interface StorageAPI {
   openFileDialog: () => Promise<string | null>;
   saveFileDialog: (defaultName: string) => Promise<string | null>;
   
-  checkForRecovery: () => Promise<string | null>;
+  checkForRecovery: () => Promise<{ projectId: string; chapterId: string; content: string; timestamp: string } | null>;
   saveRecoveryDraft: (projectId: string, chapterId: string, content: string) => Promise<void>;
   loadRecoveryDraft: () => Promise<{ projectId: string; chapterId: string; content: string; timestamp: string } | null>;
   clearRecoveryDraft: () => Promise<void>;
@@ -238,13 +246,9 @@ class ElectronStorage implements StorageAPI {
     }
   }
 
-  async checkForRecovery(): Promise<string | null> {
-    try {
-      const result = await window.electronAPI!.storage.read('recovery_draft');
-      return typeof result === 'string' ? result : null;
-    } catch {
-      return null;
-    }
+  async checkForRecovery(): Promise<{ projectId: string; chapterId: string; content: string; timestamp: string } | null> {
+    // 与 loadRecoveryDraft 语义一致：返回对象或 null，不再因 typeof === 'string' 恒为 false 而漏掉恢复草稿
+    return this.loadRecoveryDraft();
   }
 
   async saveRecoveryDraft(projectId: string, chapterId: string, content: string): Promise<void> {
@@ -381,8 +385,9 @@ class LocalStorage implements StorageAPI {
     return null;
   }
 
-  async checkForRecovery(): Promise<string | null> {
-    return localStorage.getItem('recovery_draft');
+  async checkForRecovery(): Promise<{ projectId: string; chapterId: string; content: string; timestamp: string } | null> {
+    // 与 loadRecoveryDraft 语义一致：返回解析后的对象或 null
+    return this.loadRecoveryDraft();
   }
 
   async saveRecoveryDraft(projectId: string, chapterId: string, content: string): Promise<void> {
@@ -483,10 +488,16 @@ export const setAutoSaveCallback = (callback: () => Promise<void>) => {
 export const markDirty = () => {
   isDirty = true;
   if (autoSaveTimer) clearTimeout(autoSaveTimer);
-  autoSaveTimer = setTimeout(() => {
+  autoSaveTimer = setTimeout(async () => {
     if (isDirty && saveCallback) {
-      void saveCallback();
-      isDirty = false;
+      try {
+        // 等待保存成功后才清 dirty，避免保存失败时静默丢失编辑
+        await saveCallback();
+        isDirty = false;
+      } catch (e) {
+        // 保存失败：保留 dirty 以便下个周期重试
+        console.error('Auto-save failed, will retry next cycle:', e);
+      }
     }
   }, AUTOSAVE_INTERVAL);
 };

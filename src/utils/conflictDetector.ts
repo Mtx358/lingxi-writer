@@ -69,41 +69,30 @@ export class ConflictDetector {
       }
     }
 
-    // 3. 设定引用检查
+    // 3. 设定引用一致性：章节中提及了某个设定项的名称，但与之相关的关键词
+    //    （取自设定 description 的 2-4 字中文词组）未出现，可能存在设定信息遗漏。
+    //    仅作 info 级提示，避免误报。
     this.settings.forEach(setting => {
-      const keywords = this.extractKeywords(setting);
-      let mentionedCount = 0;
-      keywords.forEach(kw => {
-        if (fullText.includes(kw)) mentionedCount++;
-      });
-
-      // 如果设定名称出现在文本中，但相关关键信息没有提及
-      if (fullText.includes(setting.name) && mentionedCount < 1) {
-        // 仅作为 info 级别的提示
+      if (!setting.name || !fullText.includes(setting.name)) return;
+      const keywords = (setting.description || '').match(/[\u4e00-\u9fa5]{2,4}/g) || [];
+      const missingKeyword = keywords.find(kw => kw !== setting.name && !fullText.includes(kw));
+      if (missingKeyword) {
+        issues.push({
+          id: generateId(),
+          type: 'setting',
+          severity: 'info',
+          chapterId: chapter.id,
+          description: `设定「${setting.name}」被引用，但关键词「${missingKeyword}」未在本章出现`,
+          suggestion: '检查是否需要补充该设定的关键信息，以保证读者理解一致',
+          resolved: false,
+        });
       }
     });
 
-    // 4. 时间线/年龄简单检测
-    this.characters.forEach(char => {
-      if (char.profile.age && fullText.includes(char.name)) {
-        // 检查文本中是否有冲突的年龄描述（简化检测）
-      }
-    });
-
-    // 5. 角色出场但无对话/动作提示
-    this.characters.forEach(char => {
-      if (fullText.includes(char.name)) {
-        const nameCount = (fullText.match(new RegExp(this.escapeRegExp(char.name), 'g')) || []).length;
-        if (nameCount > 3 && nameCount < 10) {
-          // 适度出场，检查是否有对话或动作
-          const dialoguePattern = new RegExp(`${this.escapeRegExp(char.name)}[^。！？]{0,10}[："]`, 'g');
-          const hasDialogue = dialoguePattern.test(fullText);
-          if (!hasDialogue && nameCount > 5) {
-            // 可以提示角色出场较多但缺少对话
-          }
-        }
-      }
-    });
+    // 4-5. 以下检测项暂未实现（原 if 分支为空，已删除以避免死代码误导）：
+    //   - 时间线/年龄：文本与角色 profile.age 冲突的年龄描述
+    //   - 角色出场无对话：角色出场较多但缺少对话/动作标签
+    // 如需启用，可在此处基于 this.characters 补全实现并 push 到 issues。
 
     return issues;
   }
@@ -131,7 +120,7 @@ export class ConflictDetector {
       const appearances = characterAppearances[char.id] || [];
       if (appearances.length > 0 && char.role === 'protagonist') {
         const lastAppearanceIdx = chapters.findIndex(c => c.id === appearances[appearances.length - 1]);
-        const totalChapters = chapters.filter(c => c.level === 2).length;
+        const totalChapters = chapters.filter(c => c.levelType === 'chapter').length;
         if (totalChapters - lastAppearanceIdx > 3 && lastAppearanceIdx < totalChapters - 1) {
           issues.push({
             id: generateId(),
@@ -178,15 +167,6 @@ export class ConflictDetector {
       .replace(/"[^"]*"/g, '')
       .replace(/「[^」]*」/g, '')
       .replace(/『[^』]*』/g, '');
-  }
-
-  private extractKeywords(setting: SettingItem): string[] {
-    const keywords: string[] = [];
-    const words = setting.description.match(/[\u4e00-\u9fa5]{2,4}/g);
-    if (words) {
-      keywords.push(...words.slice(0, 5));
-    }
-    return keywords;
   }
 }
 

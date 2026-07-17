@@ -11,9 +11,10 @@ import { Bold, Italic, Underline as UnderlineIcon, Strikethrough, Heading1, Head
 import { useAppStore } from '@/store/useAppStore';
 import { DEFAULT_FORESHADOW_STATUS, DEFAULT_FORESHADOW_PRIORITY } from '@/types';
 import { EDITOR_SWITCH_DELAY, EDITOR_CONTENT_UPDATE_DEBOUNCE, EDITOR_EXTERNAL_SYNC_DELAY } from '@/constants/config';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { toast } from '@/hooks/useToast';
 import { isOverlayOpen } from '@/utils/overlayState';
+import { useClickOutside } from '@/hooks/useClickOutside';
 import { useEditorAI, sanitizeAiHtml } from '@/hooks/useEditorAI';
 import { MentionExtension } from './extensions/MentionExtension';
 import MentionPanel from './MentionPanel';
@@ -21,7 +22,10 @@ import EditorContextMenu from './EditorContextMenu';
 
 export default function TiptapEditor() {
   const currentChapterId = useAppStore(s => s.currentChapterId);
-  const currentChapter = useAppStore(s => s.chapters.find(c => c.id === s.currentChapterId));
+  const chapters = useAppStore(s => s.chapters);
+  // 派生 currentChapter 用 useMemo 收敛：避免在 selector 内执行 find 派生对象，
+  // 减少 store 每次更新时 selector 的执行开销与潜在的不必要重渲染
+  const currentChapter = useMemo(() => chapters.find(c => c.id === currentChapterId), [chapters, currentChapterId]);
   const saveVersion = useAppStore(s => s.saveVersion);
   const addForeshadow = useAppStore(s => s.addForeshadow);
   const pendingEditorInsert = useAppStore(s => s.pendingEditorInsert);
@@ -159,6 +163,10 @@ export default function TiptapEditor() {
   });
 
   // 章节切换时强制同步内容（以 chapterId 为唯一依赖，避免 content 引用不变导致不触发）
+  // 注意：不将 currentChapter 派生对象放入依赖数组——currentChapter 引用在 chapters
+  // 数组每次替换（自动保存、AI 写入等）时都会变化，会导致 effect 重跑；cleanup 清掉
+  // 复位 isSwitchingRef 的定时器，而 chapterId 未变不会进入 if 块新建定时器，
+  // isSwitchingRef 将永久卡死，后续编辑不写回 store。改用 getState 读取最新内容。
   useEffect(() => {
     if (!editor) return;
     if (currentChapterId !== lastChapterIdRef.current) {
@@ -178,13 +186,13 @@ export default function TiptapEditor() {
       }
       isSwitchingRef.current = true;
       lastChapterIdRef.current = currentChapterId;
-      const targetContent = currentChapter?.content || '<p></p>';
+      const targetContent = useAppStore.getState().chapters.find(c => c.id === currentChapterId)?.content || '<p></p>';
       editor.commands.setContent(targetContent, { emitUpdate: false });
       // 短暂延迟后恢复 onUpdate 写入，确保 setContent 不会触发 store 更新
       const timer = setTimeout(() => { isSwitchingRef.current = false; }, EDITOR_SWITCH_DELAY);
       return () => clearTimeout(timer);
     }
-  }, [currentChapterId, editor, currentChapter, abortGeneration]);
+  }, [currentChapterId, editor, abortGeneration]);
 
   // 监听 contentEpoch：外部（恢复版本/恢复草稿）替换章节内容时，强制编辑器刷新
   useEffect(() => {
@@ -221,18 +229,8 @@ export default function TiptapEditor() {
     setPendingEditorInsert(null);
   }, [editor, pendingEditorInsert, setPendingEditorInsert, currentChapterId]);
 
-  // 点击外部关闭提及面板
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (showMentionPanel && editorContainerRef.current) {
-        if (!editorContainerRef.current.contains(e.target as Node)) {
-          setShowMentionPanel(false);
-        }
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showMentionPanel]);
+  // 点击外部关闭提及面板：复用 useClickOutside，仅在 showMentionPanel 为 true 时挂载监听器
+  useClickOutside(editorContainerRef, () => setShowMentionPanel(false), showMentionPanel);
 
   const closeContextMenu = useCallback(() => {
     setShowContextMenu(false);

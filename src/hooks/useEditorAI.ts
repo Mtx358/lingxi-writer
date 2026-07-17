@@ -49,6 +49,8 @@ export function useEditorAI({
 }: UseEditorAIOptions) {
   const [isGenerating, setIsGenerating] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  // 组件挂载状态：卸载后置 false，防止 abort 后的 onComplete/onError/finally 触发 setState
+  const mountedRef = useRef(true);
   // 续写流式节流：onChunk 攒入 buffer，由 timer 定时 flush 到编辑器
   const continueBufferRef = useRef('');
   const continueFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -61,9 +63,10 @@ export function useEditorAI({
 
   useEffect(() => { isGeneratingRef.current = isGenerating; }, [isGenerating, isGeneratingRef]);
 
-  // 组件卸载时清理所有异步资源：流式节流定时器、进行中的 AI 请求
+  // 组件卸载时清理所有异步资源：流式节流定时器、进行中的 AI 请求，并标记已卸载
   useEffect(() => {
     return () => {
+      mountedRef.current = false;
       if (continueFlushTimerRef.current) clearTimeout(continueFlushTimerRef.current);
       abortControllerRef.current?.abort();
     };
@@ -87,7 +90,7 @@ export function useEditorAI({
     if (isGeneratingRef.current) {
       setIsGenerating(false);
       setAIGenerating(false);
-      if (editor) editor.setEditable(true);
+      if (editor && !editor.isDestroyed) editor.setEditable(true);
       generatingChapterIdRef.current = null;
     }
   }, [editor, setAIGenerating]);
@@ -110,7 +113,7 @@ export function useEditorAI({
 
       const handler: StreamHandler = {
         onChunk: (chunk: string) => {
-          if (!editor) return;
+          if (!editor || editor.isDestroyed) return;
           // 防串章：若生成期间章节已被切换则中止
           if (generatingChapterIdRef.current !== currentChapterIdRef.current) {
             abortControllerRef.current?.abort();
@@ -124,7 +127,7 @@ export function useEditorAI({
             continueFlushTimerRef.current = null;
             // S2 兜底校验：章节切换 useEffect 已 abort，但定时器回调可能在 abort 前已入队，
             // 这里再次确认生成章节与当前章节一致后才写入编辑器，杜绝串章
-            if (!editor || !continueBufferRef.current) return;
+            if (!editor || editor.isDestroyed || !continueBufferRef.current) return;
             if (generatingChapterIdRef.current !== currentChapterIdRef.current) {
               continueBufferRef.current = '';
               return;
@@ -137,7 +140,7 @@ export function useEditorAI({
           }, AI_STREAM_THROTTLE_MS);
         },
         onComplete: () => {
-          if (!editor) return;
+          if (!editor || editor.isDestroyed) return;
           // S2 兜底校验：章节已切换则丢弃残留 buffer，避免把旧章节的 AI 内容写到新章节
           if (generatingChapterIdRef.current !== currentChapterIdRef.current) {
             continueBufferRef.current = '';
@@ -178,7 +181,7 @@ export function useEditorAI({
           continueBufferRef.current = '';
           // 出错时也需把已流式插入的部分保留到 store
           const cid = generatingChapterIdRef.current;
-          if (cid && editor) {
+          if (cid && editor && !editor.isDestroyed) {
             useAppStore.getState().updateChapterContent(cid, editor.getHTML());
           }
         },
@@ -199,7 +202,11 @@ export function useEditorAI({
       console.error('AI continue error:', e);
       toast.error('AI 续写失败', msg);
     } finally {
-      editor.setEditable(true);
+      // 卸载后不再 setState；非主动中止且编辑器未销毁时才恢复可编辑状态
+      if (!mountedRef.current) return;
+      if (!abortControllerRef.current?.signal.aborted && !editor.isDestroyed) {
+        editor.setEditable(true);
+      }
       setIsGenerating(false);
       setAIGenerating(false);
       abortControllerRef.current = null;
@@ -238,7 +245,7 @@ export function useEditorAI({
 
       const handler: StreamHandler = {
         onChunk: (chunk: string) => {
-          if (!editor) return;
+          if (!editor || editor.isDestroyed) return;
           if (generatingChapterIdRef.current !== currentChapterIdRef.current) {
             abortControllerRef.current?.abort();
             return;
@@ -247,7 +254,7 @@ export function useEditorAI({
           streamingBufferRef.current += chunk;
         },
         onComplete: () => {
-          if (!editor) return;
+          if (!editor || editor.isDestroyed) return;
           if (isTextSelected && selectionRangeRef.current) {
             // 流结束后一次性原子替换选中文本
             const { from, to } = selectionRangeRef.current;
@@ -287,7 +294,11 @@ export function useEditorAI({
       console.error('AI polish error:', e);
       toast.error('AI 润色失败', msg);
     } finally {
-      editor.setEditable(true);
+      // 卸载后不再 setState；非主动中止且编辑器未销毁时才恢复可编辑状态
+      if (!mountedRef.current) return;
+      if (!abortControllerRef.current?.signal.aborted && !editor.isDestroyed) {
+        editor.setEditable(true);
+      }
       setIsGenerating(false);
       setAIGenerating(false);
       abortControllerRef.current = null;

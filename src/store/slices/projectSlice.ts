@@ -275,7 +275,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const projects = [...get().projects, project];
     void storage.set('projects', projects);
 
-    const firstChapter = chapters.find(c => c.level === 2);
+    const firstChapter = chapters.find(c => c.levelType === 'chapter');
     set({
       projects,
       currentProjectId: project.id,

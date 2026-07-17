@@ -119,14 +119,22 @@ export async function generateContinuationStream(
       if (signal?.aborted) break;
       handler?.onChunk(chunk);
     }
+    // 中止后不再触发 onComplete，避免向已取消/卸载的调用方回调
+    if (signal?.aborted) return content;
     handler?.onComplete(content);
     return content;
   }
 
-  const prompt = buildContinuePrompt(context, chapterSummary, characters, style, settings);
-  const result = await llmClient.callLLMStream(prompt, NOVEL_SYSTEM_PROMPT, handler, signal);
-  const htmlContent = llmClient.ensureHtmlParagraphs(result);
-  return fullHumanize(htmlContent, defaultHumanizeOptions(humanizeIntensityForContinue()));
+  try {
+    const prompt = buildContinuePrompt(context, chapterSummary, characters, style, settings);
+    const result = await llmClient.callLLMStream(prompt, NOVEL_SYSTEM_PROMPT, handler, signal);
+    const htmlContent = llmClient.ensureHtmlParagraphs(result);
+    return fullHumanize(htmlContent, defaultHumanizeOptions(humanizeIntensityForContinue()));
+  } catch (e) {
+    console.warn('AI generateContinuationStream failed:', e);
+    handler?.onError(e instanceof Error ? e : new Error(String(e)));
+    return '';
+  }
 }
 
 // 构造续写 prompt（被同步/流式两个入口复用，避免重复拼装）
@@ -296,14 +304,22 @@ export async function expandTextStream(
       handler?.onChunk(chunk);
       currentIndex += chunkSize;
     }
+    // 中止后不再触发 onComplete，避免向已取消/卸载的调用方回调
+    if (signal?.aborted) return content;
     handler?.onComplete(content);
     return content;
   }
 
-  const prompt = buildExpandPrompt(text, type);
-  const result = await llmClient.callLLMStream(prompt, NOVEL_SYSTEM_PROMPT, handler, signal);
-  const htmlContent = llmClient.ensureHtmlParagraphs(result);
-  return fullHumanize(htmlContent, defaultHumanizeOptions(humanizeIntensityForExpand()));
+  try {
+    const prompt = buildExpandPrompt(text, type);
+    const result = await llmClient.callLLMStream(prompt, NOVEL_SYSTEM_PROMPT, handler, signal);
+    const htmlContent = llmClient.ensureHtmlParagraphs(result);
+    return fullHumanize(htmlContent, defaultHumanizeOptions(humanizeIntensityForExpand()));
+  } catch (e) {
+    console.warn('AI expandTextStream failed:', e);
+    handler?.onError(e instanceof Error ? e : new Error(String(e)));
+    return '';
+  }
 }
 
 function buildExpandPrompt(text: string, type: 'detail' | 'dialogue' | 'environment' | 'psychology'): string {
@@ -445,14 +461,22 @@ export async function polishTextStream(
       handler?.onChunk(chunk);
       currentIndex += chunkSize;
     }
+    // 中止后不再触发 onComplete，避免向已取消/卸载的调用方回调
+    if (signal?.aborted) return content;
     handler?.onComplete(content);
     return content;
   }
 
-  const prompt = buildPolishPrompt(text, style);
-  const result = await llmClient.callLLMStream(prompt, NOVEL_SYSTEM_PROMPT, handler, signal);
-  const htmlContent = llmClient.ensureHtmlParagraphs(result);
-  return fullHumanize(htmlContent, defaultHumanizeOptions(55));
+  try {
+    const prompt = buildPolishPrompt(text, style);
+    const result = await llmClient.callLLMStream(prompt, NOVEL_SYSTEM_PROMPT, handler, signal);
+    const htmlContent = llmClient.ensureHtmlParagraphs(result);
+    return fullHumanize(htmlContent, defaultHumanizeOptions(55));
+  } catch (e) {
+    console.warn('AI polishTextStream failed:', e);
+    handler?.onError(e instanceof Error ? e : new Error(String(e)));
+    return '';
+  }
 }
 
 function buildPolishPrompt(text: string, style: string): string {
@@ -565,9 +589,16 @@ export async function analyzeChapter(chapter: Chapter): Promise<ChapterAnalysis>
 ${text.slice(0, 3000)}`;
 
       const result = await llmClient.callLLM(prompt, '你是一位专业的小说编辑，擅长分析小说章节质量。只返回JSON，不要其他内容。');
-      const jsonMatch = result.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
+      // 先 trim 后尝试直接 JSON.parse，失败再回退到正则提取，避免贪婪 \{[\s\S]*\} 吞掉解释性文字中的 }
+      const trimmed = result.trim();
+      let parsed: any;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
+        if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+      }
+      if (parsed) {
         return {
           chapterId: chapter.id,
           wordCount,
@@ -614,7 +645,7 @@ export async function analyzeStructure(chapters: Chapter[]): Promise<{
   const settings = llmClient.getSettings();
   if (settings.provider !== 'mock') {
     try {
-      const topChapters = chapters.filter(c => c.level === 2);
+      const topChapters = chapters.filter(c => c.levelType === 'chapter');
       const chapterList = topChapters.map((c, i) =>
         `第${i + 1}章 ${c.title}: ${c.summary || c.content.replace(/<[^>]*>/g, '').slice(0, 200)}`
       ).join('\n');
@@ -635,9 +666,16 @@ export async function analyzeStructure(chapters: Chapter[]): Promise<{
 ${chapterList || '（暂无章节）'}`;
 
       const result = await llmClient.callLLM(prompt, '你是一位专业的小说结构编辑。只返回JSON，不要其他内容。');
-      const jsonMatch = result.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
+      // 先 trim 后尝试直接 JSON.parse，失败再回退到正则提取，避免贪婪 \{[\s\S]*\} 吞掉解释性文字中的 }
+      const trimmed = result.trim();
+      let parsed: any;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
+        if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+      }
+      if (parsed) {
         return {
           issues: Array.isArray(parsed.issues) ? parsed.issues : [],
           pacing: Array.isArray(parsed.pacing) ? parsed.pacing.map((v: unknown) => llmClient.clampScore(v)) : [],
@@ -656,8 +694,8 @@ ${chapterList || '（暂无章节）'}`;
     { type: 'pacing', severity: 'info', chapterId: chapters[0]?.id, description: '开篇节奏偏慢，建议加快冲突引入', suggestion: '可以将悬念前置，在第一章就抛出核心问题。' },
   ];
 
-  const pacing = chapters.filter(c => c.level === 2).map(() => 30 + Math.floor(Math.random() * 60));
-  const emotionCurve = chapters.filter(c => c.level === 2).map(() => 40 + Math.floor(Math.random() * 50));
+  const pacing = chapters.filter(c => c.levelType === 'chapter').map(() => 30 + Math.floor(Math.random() * 60));
+  const emotionCurve = chapters.filter(c => c.levelType === 'chapter').map(() => 40 + Math.floor(Math.random() * 50));
 
   return { issues, pacing, emotionCurve };
 }
@@ -668,7 +706,7 @@ export async function checkStyleConsistency(chapters: Chapter[]): Promise<{
   const settings = llmClient.getSettings();
   if (settings.provider !== 'mock') {
     try {
-      const topChapters = chapters.filter(c => c.level === 2);
+      const topChapters = chapters.filter(c => c.levelType === 'chapter');
       const chapterList = topChapters.map(c =>
         `章节 ${c.title}: ${c.content.replace(/<[^>]*>/g, '').slice(0, 500)}`
       ).join('\n---\n');
@@ -687,9 +725,16 @@ export async function checkStyleConsistency(chapters: Chapter[]): Promise<{
 ${chapterList || '（暂无章节）'}`;
 
       const result = await llmClient.callLLM(prompt, '你是一位专业的小说编辑，擅长检测文风一致性。只返回JSON。');
-      const jsonMatch = result.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
+      // 先 trim 后尝试直接 JSON.parse，失败再回退到正则提取，避免贪婪 \{[\s\S]*\} 吞掉解释性文字中的 }
+      const trimmed = result.trim();
+      let parsed: any;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
+        if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+      }
+      if (parsed) {
         return { issues: Array.isArray(parsed.issues) ? parsed.issues : [] };
       }
     } catch (e) {

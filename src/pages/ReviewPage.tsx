@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, BarChart3, AlertTriangle, TrendingUp, Heart, Zap, Clock, BookOpen, FileText } from 'lucide-react';
+import { ArrowLeft, BarChart3, AlertTriangle, TrendingUp, Heart, Zap, Clock, BookOpen, FileText, Users } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { aiService } from '@/utils/aiService';
 import { CHAPTER_STATUS_LABELS } from '@/types';
@@ -75,9 +75,12 @@ export default function ReviewPage() {
   useEffect(() => {
     if (chapters.length === 0) return;
 
+    // cancelled 守卫：组件卸载或 chapters 再次变化时，丢弃进行中的异步分析，避免卸载后 setState
+    let cancelled = false;
+
     // I2: 防抖 N 毫秒，避免编辑过程中每次 chapters 引用变化都触发全量分析
     const debounceTimer = setTimeout(() => {
-      const level2 = chapters.filter(c => c.level === 2);
+      const level2 = chapters.filter(c => c.levelType === 'chapter');
 
       // 计算各章节内容哈希与整书组合哈希
       const currentHashes = new Map<string, string>();
@@ -100,11 +103,13 @@ export default function ReviewPage() {
       if (changedChapters.length === 0 && !structureChanged) return;
 
       const runAnalysis = async () => {
+        if (cancelled) return;
         setLoading(true);
         try {
           // 结构分析：仅当整书哈希变化时重新执行
           if (structureChanged) {
             const result = await aiService.analyzeStructure(chapters);
+            if (cancelled) return;
             setAnalysis(result);
             structureHashRef.current = structureHash;
           }
@@ -120,6 +125,7 @@ export default function ReviewPage() {
                 console.warn(`分析章节「${chapter.title}」失败:`, e);
               }
             });
+            if (cancelled) return;
             // 合并：新结果覆盖旧结果，未变更章节保留缓存
             const merged: Record<string, ChapterAnalysis> = { ...chapterAnalysesRef.current, ...newResults };
             // 清理已删除章节的缓存
@@ -135,17 +141,26 @@ export default function ReviewPage() {
             }
           }
         } finally {
-          setLoading(false);
+          if (!cancelled) setLoading(false);
         }
       };
       runAnalysis();
     }, REVIEW_ANALYSIS_DEBOUNCE_MS);
 
-    return () => clearTimeout(debounceTimer);
+    return () => {
+      cancelled = true;
+      clearTimeout(debounceTimer);
+    };
   }, [chapters]);
 
-  const project = projects.find(p => p.id === projectId);
-  const mainChapters = chapters.filter(c => c.level === 2).sort((a, b) => a.order - b.order);
+  const project = useMemo(
+    () => projects.find(p => p.id === projectId),
+    [projects, projectId]
+  );
+  const mainChapters = useMemo(
+    () => chapters.filter(c => c.levelType === 'chapter').sort((a, b) => a.order - b.order),
+    [chapters]
+  );
 
   if (!project) {
     return (
@@ -377,7 +392,11 @@ export default function ReviewPage() {
                       <tr
                         key={chapter.id}
                         className="border-b border-ink-800/30 hover:bg-ink-800/30 cursor-pointer"
-                        onClick={() => navigate(`/project/${projectId}/editor`)}
+                        onClick={() => {
+                          // 跳转前定位章节，避免进入编辑器后丢失当前章上下文
+                          useAppStore.getState().setCurrentChapter(chapter.id);
+                          navigate(`/project/${projectId}/editor`);
+                        }}
                       >
                         <td className="py-2.5 pr-4">
                           <div className="text-ink-200">{chapter.title}</div>
@@ -445,21 +464,3 @@ export default function ReviewPage() {
   );
 }
 
-function Users(props: { className?: string }) {
-  return (
-    <svg
-      {...props}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-      <circle cx="9" cy="7" r="4" />
-      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
-      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-    </svg>
-  );
-}

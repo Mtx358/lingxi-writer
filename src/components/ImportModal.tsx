@@ -18,6 +18,9 @@ const DEFAULT_HEADING_MAPPING: HeadingMapping = {
   h3: 'ignore',
 };
 
+// 导入文件大小上限 20 MB，避免一次性读入超大文件导致卡死
+const MAX_IMPORT_SIZE = 20 * 1024 * 1024;
+
 interface ImportModalProps {
   onClose: () => void;
 }
@@ -38,6 +41,21 @@ export default function ImportModal({ onClose }: ImportModalProps) {
   const [isDocx, setIsDocx] = useState(false);
   const [headingMapping, setHeadingMapping] = useState<HeadingMapping>(DEFAULT_HEADING_MAPPING);
   const parseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 跟踪 docx object URL 以便释放；标记挂载状态避免卸载后 setState
+  const objectUrlRef = useRef<string | null>(null);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      // 组件卸载时释放可能残留的 docx object URL，避免内存泄漏
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!fileContent && !isDocx) return;
@@ -46,29 +64,40 @@ export default function ImportModal({ onClose }: ImportModalProps) {
     }
     parseTimerRef.current = setTimeout(() => {
       const processResult = async () => {
-        let result: ImportResult;
-        if (isDocx) {
-          try {
-            const response = await fetch(fileContent);
-            const arrayBuffer = await response.arrayBuffer();
-            result = await parseDocx(arrayBuffer, headingMapping);
-          } catch {
-            setError('DOCX 解析失败，请确保文件格式正确');
+        try {
+          let result: ImportResult;
+          if (isDocx) {
+            try {
+              const response = await fetch(fileContent);
+              const arrayBuffer = await response.arrayBuffer();
+              result = await parseDocx(arrayBuffer, headingMapping);
+            } catch {
+              if (!isMountedRef.current) return;
+              setError('DOCX 解析失败，请确保文件格式正确');
+              setImportResult(null);
+              return;
+            }
+          } else if (isMarkdown) {
+            result = parseMarkdown(fileContent, headingMapping);
+          } else {
+            result = parsePlainText(fileContent);
+          }
+          if (result.chapters.length === 0) {
+            if (!isMountedRef.current) return;
             setImportResult(null);
+            setError('未识别到有效内容，请检查文件格式或标题映射配置');
             return;
           }
-        } else if (isMarkdown) {
-          result = parseMarkdown(fileContent, headingMapping);
-        } else {
-          result = parsePlainText(fileContent);
-        }
-        if (result.chapters.length === 0) {
+          if (!isMountedRef.current) return;
+          setImportResult(result);
+          setError('');
+        } catch (e) {
+          // parseMarkdown/parsePlainText/parseDocx 抛错时统一兜底，避免未捕获异常
+          console.error('解析文件失败:', e);
+          if (!isMountedRef.current) return;
+          setError('文件解析失败，请检查文件格式');
           setImportResult(null);
-          setError('未识别到有效内容，请检查文件格式或标题映射配置');
-          return;
         }
-        setImportResult(result);
-        setError('');
       };
       processResult();
     }, 300);
@@ -81,21 +110,39 @@ export default function ImportModal({ onClose }: ImportModalProps) {
 
   const handleFile = async (file: File) => {
     setError('');
+    // 文件大小限制，避免一次性读入超大文件导致卡死
+    if (file.size > MAX_IMPORT_SIZE) {
+      setError('文件过大，请控制在 20 MB 以内');
+      return;
+    }
+    // 扩展名大小写不敏感校验（含拖拽入文件，拖拽不走 input accept）
+    const lowerName = file.name.toLowerCase();
+    const isMd = lowerName.endsWith('.md') || lowerName.endsWith('.markdown');
+    const docxExt = lowerName.endsWith('.docx');
+    const isTxt = lowerName.endsWith('.txt');
+    if (!isMd && !docxExt && !isTxt) {
+      setError('仅支持 .md .markdown .txt .docx 格式');
+      return;
+    }
     setFileName(file.name);
     try {
-      const isMd = file.name.endsWith('.md') || file.name.endsWith('.markdown');
-      const docxExt = file.name.endsWith('.docx');
       setIsMarkdown(isMd);
       setIsDocx(docxExt);
-      
+
       if (docxExt) {
+        // 重新生成 URL 前释放上一次的 object URL，避免内存泄漏
+        if (objectUrlRef.current) {
+          URL.revokeObjectURL(objectUrlRef.current);
+        }
         const url = URL.createObjectURL(file);
+        objectUrlRef.current = url;
         setFileContent(url);
       } else {
         const text = await file.text();
         setFileContent(text);
       }
     } catch {
+      if (!isMountedRef.current) return;
       setError('文件读取失败，请重试');
       setFileContent('');
       setIsMarkdown(false);
@@ -116,8 +163,9 @@ export default function ImportModal({ onClose }: ImportModalProps) {
     if (file) handleFile(file);
   };
 
-  const handleConfirmImport = () => {
+  const handleConfirmImport = async () => {
     if (!importResult) return;
+    if (importing) return;
     setImporting(true);
 
     try {
@@ -133,13 +181,17 @@ export default function ImportModal({ onClose }: ImportModalProps) {
         order++;
       });
 
-      setTimeout(() => {
-        onClose();
-        navigate(`/project/${projectId}/editor`);
-      }, 500);
-    } catch {
+      // 显式持久化章节后再跳转，避免编辑器挂载时 openProject 覆盖内存中尚未落盘的导入数据；
+      // 用 await 替代原 500ms setTimeout 盲等
+      await useAppStore.getState().saveProject();
+      onClose();
+      navigate(`/project/${projectId}/editor`);
+    } catch (e) {
+      console.error('导入失败:', e);
+      if (!isMountedRef.current) return;
       setError('导入失败，请重试');
-      setImporting(false);
+    } finally {
+      if (isMountedRef.current) setImporting(false);
     }
   };
 
@@ -294,7 +346,18 @@ export default function ImportModal({ onClose }: ImportModalProps) {
 
             <div className="flex gap-2">
               <button
-                onClick={() => { setImportResult(null); setFileName(''); setFileContent(''); setIsMarkdown(false); }}
+                onClick={() => {
+                  setImportResult(null);
+                  setFileName('');
+                  setFileContent('');
+                  setIsMarkdown(false);
+                  setIsDocx(false);
+                  // 释放残留的 docx object URL
+                  if (objectUrlRef.current) {
+                    URL.revokeObjectURL(objectUrlRef.current);
+                    objectUrlRef.current = null;
+                  }
+                }}
                 className="flex-1 btn btn-secondary"
                 disabled={importing}
               >

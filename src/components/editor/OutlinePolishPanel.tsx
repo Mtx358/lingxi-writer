@@ -81,7 +81,7 @@ export default function OutlinePolishPanel() {
   // O2: 标记是否已执行过真实分析，未分析时所有诊断区均显示占位态
   const [hasAnalyzed, setHasAnalyzed] = useState(false);
 
-  const mainChapters = chapters.filter(c => c.level === 2);
+  const mainChapters = chapters.filter(c => c.levelType === 'chapter');
 
   const handleAnalyze = async () => {
     setAnalyzing(true);

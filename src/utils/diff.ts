@@ -1,9 +1,19 @@
 import DOMPurify from 'dompurify';
 import { DIFF_CHAR_LIMIT } from '@/constants/config';
 
+/** 行级/块级 LCS 的最大输入长度，超过则截断以避免 O(m×n) DP 在大文档上性能退化 */
+const DIFF_LINE_LIMIT = 2000;
+
 export interface DiffChunk {
   type: 'added' | 'removed' | 'unchanged';
   content: string;
+}
+
+export interface CharDiffResult {
+  left: DiffChunk[];
+  right: DiffChunk[];
+  /** 输入超过 DIFF_CHAR_LIMIT 时为 true，表示结果仅基于截断后的前缀 */
+  truncated?: boolean;
 }
 
 export interface LineDiff {
@@ -12,10 +22,7 @@ export interface LineDiff {
   type: 'added' | 'removed' | 'unchanged' | 'modified';
   leftNumber?: number;
   rightNumber?: number;
-  charDiffs?: {
-    left: DiffChunk[];
-    right: DiffChunk[];
-  };
+  charDiffs?: CharDiffResult;
 }
 
 export function computeLineDiff(oldText: string, newText: string): LineDiff[] {
@@ -69,13 +76,19 @@ export function computeLineDiff(oldText: string, newText: string): LineDiff[] {
 }
 
 function computeLCS(a: string[], b: string[]): string[] {
-  const m = a.length;
-  const n = b.length;
+  // 行级 LCS 无输入长度钳制会导致 O(m×n) DP 在大文件上退化，截断到 DIFF_LINE_LIMIT
+  const aTrunc = a.length > DIFF_LINE_LIMIT ? a.slice(0, DIFF_LINE_LIMIT) : a;
+  const bTrunc = b.length > DIFF_LINE_LIMIT ? b.slice(0, DIFF_LINE_LIMIT) : b;
+  if (a.length > DIFF_LINE_LIMIT || b.length > DIFF_LINE_LIMIT) {
+    console.warn(`[diff] 行级 LCS 输入超过 ${DIFF_LINE_LIMIT}，已截断`);
+  }
+  const m = aTrunc.length;
+  const n = bTrunc.length;
   const dp: number[][] = Array(m + 1).fill(null).map(() => Array(n + 1).fill(0));
 
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
-      if (a[i - 1] === b[j - 1]) {
+      if (aTrunc[i - 1] === bTrunc[j - 1]) {
         dp[i][j] = dp[i - 1][j - 1] + 1;
       } else {
         dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
@@ -87,8 +100,8 @@ function computeLCS(a: string[], b: string[]): string[] {
   let i = m;
   let j = n;
   while (i > 0 && j > 0) {
-    if (a[i - 1] === b[j - 1]) {
-      lcs.unshift(a[i - 1]);
+    if (aTrunc[i - 1] === bTrunc[j - 1]) {
+      lcs.unshift(aTrunc[i - 1]);
       i--;
       j--;
     } else if (dp[i - 1][j] > dp[i][j - 1]) {
@@ -143,16 +156,19 @@ function mergeAdjacentChanges(diffs: LineDiff[]): LineDiff[] {
   return result;
 }
 
-export function computeCharDiff(oldStr: string, newStr: string): {
-  left: DiffChunk[];
-  right: DiffChunk[];
-} {
+export function computeCharDiff(oldStr: string, newStr: string): CharDiffResult {
   if (!oldStr && !newStr) return { left: [], right: [] };
   if (!oldStr) return { left: [], right: [{ type: 'added', content: newStr }] };
   if (!newStr) return { left: [{ type: 'removed', content: oldStr }], right: [] };
 
-  const oldChars = Array.from(oldStr);
-  const newChars = Array.from(newStr);
+  // computeCharLCS 会将 m/n 钳制为 DIFF_CHAR_LIMIT，这里必须同步截断输入数组，
+  // 否则下方回溯循环仍遍历完整数组，导致 k >= lcs.length 后 lcs[k] 为 undefined，
+  // 剩余字符全部被误判为 added/removed
+  const truncated = oldStr.length > DIFF_CHAR_LIMIT || newStr.length > DIFF_CHAR_LIMIT;
+  const oldSrc = truncated && oldStr.length > DIFF_CHAR_LIMIT ? oldStr.slice(0, DIFF_CHAR_LIMIT) : oldStr;
+  const newSrc = truncated && newStr.length > DIFF_CHAR_LIMIT ? newStr.slice(0, DIFF_CHAR_LIMIT) : newStr;
+  const oldChars = Array.from(oldSrc);
+  const newChars = Array.from(newSrc);
   const lcs = computeCharLCS(oldChars, newChars);
 
   const leftChunks: DiffChunk[] = [];
@@ -202,7 +218,7 @@ export function computeCharDiff(oldStr: string, newStr: string): {
   flushLeft();
   flushRight();
 
-  return { left: leftChunks, right: rightChunks };
+  return { left: leftChunks, right: rightChunks, truncated: truncated || undefined };
 }
 
 function computeCharLCS(a: string[], b: string[]): string[] {
@@ -307,7 +323,12 @@ export function htmlToBlocks(html: string): HtmlBlock[] {
 }
 
 function escapeHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 export interface HtmlBlockDiff {
@@ -316,7 +337,7 @@ export interface HtmlBlockDiff {
   rightBlock?: HtmlBlock;
   leftNumber?: number;
   rightNumber?: number;
-  charDiffs?: { left: DiffChunk[]; right: DiffChunk[] };
+  charDiffs?: CharDiffResult;
 }
 
 /**
@@ -389,19 +410,25 @@ function mergeHtmlAdjacent(diffs: HtmlBlockDiff[]): HtmlBlockDiff[] {
 
 // 通用字符串数组 LCS（复用行级 LCS 算法，但不限制为行）
 function computeTextLCS(a: string[], b: string[]): string[] {
-  const m = a.length;
-  const n = b.length;
+  // 块级 LCS 同样钳制到 DIFF_LINE_LIMIT，避免大文档 O(m×n) DP 退化
+  const aTrunc = a.length > DIFF_LINE_LIMIT ? a.slice(0, DIFF_LINE_LIMIT) : a;
+  const bTrunc = b.length > DIFF_LINE_LIMIT ? b.slice(0, DIFF_LINE_LIMIT) : b;
+  if (a.length > DIFF_LINE_LIMIT || b.length > DIFF_LINE_LIMIT) {
+    console.warn(`[diff] 块级 LCS 输入超过 ${DIFF_LINE_LIMIT}，已截断`);
+  }
+  const m = aTrunc.length;
+  const n = bTrunc.length;
   if (m === 0 || n === 0) return [];
   const dp: number[][] = Array(m + 1).fill(null).map(() => Array(n + 1).fill(0));
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
+      dp[i][j] = aTrunc[i - 1] === bTrunc[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
     }
   }
   const lcs: string[] = [];
   let i = m; let j = n;
   while (i > 0 && j > 0) {
-    if (a[i - 1] === b[j - 1]) { lcs.unshift(a[i - 1]); i--; j--; }
+    if (aTrunc[i - 1] === bTrunc[j - 1]) { lcs.unshift(aTrunc[i - 1]); i--; j--; }
     else if (dp[i - 1][j] > dp[i][j - 1]) i--;
     else j--;
   }

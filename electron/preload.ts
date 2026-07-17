@@ -3,12 +3,26 @@ import { contextBridge, ipcRenderer } from 'electron';
 const DEFAULT_TIMEOUT = 30000;
 
 function invokeWithTimeout<T>(channel: string, timeout: number = DEFAULT_TIMEOUT, ...args: unknown[]): Promise<T> {
-  return Promise.race([
-    ipcRenderer.invoke(channel, ...args) as Promise<T>,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`IPC timeout: ${channel}`)), timeout)
-    ),
-  ]);
+  let timedOut = false;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      reject(new Error(`IPC timeout: ${channel}`));
+    }, timeout);
+  });
+  const invokePromise = ipcRenderer.invoke(channel, ...args) as Promise<T>;
+  return Promise.race([invokePromise, timeoutPromise]).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
+    // 超时后主动取消主进程进行中的 IPC 操作，
+    // 否则 ai:proxyStream 这类长任务会继续运行占用资源并泄露密钥请求
+    if (timedOut && channel === 'ai:proxyStream') {
+      const params = args[0] as { requestId?: string } | undefined;
+      if (params?.requestId) {
+        ipcRenderer.invoke('ai:abort', params.requestId).catch(() => {});
+      }
+    }
+  });
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -31,6 +45,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   
   storage: {
+    // TODO 安全收敛：readFileBase64 当前允许读取 userData 下任意文件，
+    // 后续应限定为 materials/ 子目录或显式 token 化，防止读取其他模块的敏感配置
     read: (key: string) => invokeWithTimeout('storage:read', 10000, key),
     write: (key: string, value: unknown) => invokeWithTimeout('storage:write', 10000, key, value),
     remove: (key: string) => invokeWithTimeout('storage:remove', 10000, key),
@@ -38,6 +54,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     backupProject: (projectId: string, keepCount?: number) =>
       invokeWithTimeout('storage:backupProject', 60000, projectId, keepCount),
     readFileBase64: (filePath: string) => invokeWithTimeout('storage:readFileBase64', 15000, filePath),
+    // TODO 安全收敛：encrypt/decrypt 当前未限定用途，
+    // 后续应限定为 aiSettings 相关字段（apiKey），避免渲染层用它加密任意数据落盘
     encrypt: (plainText: string) => invokeWithTimeout('storage:encrypt', 5000, plainText),
     decrypt: (encryptedBase64: string) => invokeWithTimeout('storage:decrypt', 5000, encryptedBase64),
   },
@@ -100,6 +118,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.removeListener(chunkChannel, chunkHandler);
         ipcRenderer.removeListener(doneChannel, doneHandler);
         ipcRenderer.removeListener(errorChannel, errorHandler);
+        // 主动通知主进程中止进行中的 fetch，释放后端资源，
+        // 避免 cleanup 后流仍在后台写入 chunk 通道
+        ipcRenderer.invoke('ai:abort', requestId).catch(() => {});
       };
 
       ipcRenderer.on(chunkChannel, chunkHandler);

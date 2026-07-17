@@ -410,7 +410,9 @@ export function optimizeDialogue(text: string): string {
   ];
   
   for (const tag of dialogueTags) {
-    const regex = new RegExp(tag, 'g');
+    // 仅当 tag 后紧跟引号（中英文）或冒号时才视为对话标签并替换，
+    // 避免误伤"他说话很大声"、"回答问题"等正常叙事
+    const regex = new RegExp(`${tag}(?=[\\u201c\\u201d\\u0022\\uff1a])`, 'g');
     const matches = result.match(regex);
     if (matches && matches.length > 1) {
       let count = 0;

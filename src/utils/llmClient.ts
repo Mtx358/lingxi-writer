@@ -180,9 +180,9 @@ export class LLMClient {
   ): Promise<string> {
     const { provider } = this.settings;
 
-    // mock 或未知 provider 走本地模拟（不涉及密钥，不需要代理）
+    // mock 或未知 provider 不支持流式：显式抛错，避免委托给 callLLM 产生混淆的错误
     if (provider !== 'local' && provider !== 'openai' && provider !== 'deepseek') {
-      return await this.callLLM(prompt, systemPrompt);
+      throw new Error(`Streaming not supported for provider: ${provider}. Please configure a real provider (local/openai/deepseek).`);
     }
 
     // Electron 环境：走主进程代理，密钥不落渲染层
@@ -198,29 +198,31 @@ export class LLMClient {
     const messages = this.buildMessages(prompt, systemPrompt);
     const { url, headers, body } = this.resolveEndpoint(messages, { stream: true });
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      // 接入 AbortSignal，使取消按钮真正中断网络请求
-      signal,
-    });
-
-    if (!res.ok) {
-      throw new Error(`API error: ${res.status} ${res.statusText}`);
-    }
-
-    const reader = res.body?.getReader();
-    if (!reader) {
-      throw new Error('No response body');
-    }
-
-    const decoder = new TextDecoder();
+    // fullContent 在 try 外声明，便于 catch 中保留已生成的部分内容
     let fullContent = '';
-    // SSE 跨 chunk 缓冲：TCP 分片可能将一行 JSON 截断，需缓存未完成的尾行
-    let sseBuffer = '';
 
     try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        // 接入 AbortSignal，使取消按钮真正中断网络请求
+        signal,
+      });
+
+      if (!res.ok) {
+        throw new Error(`API error: ${res.status} ${res.statusText}`);
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        throw new Error('No response body');
+      }
+
+      const decoder = new TextDecoder();
+      // SSE 跨 chunk 缓冲：TCP 分片可能将一行 JSON 截断，需缓存未完成的尾行
+      let sseBuffer = '';
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -313,16 +315,18 @@ export class LLMClient {
     );
 
     // 接入 AbortSignal：用户取消时通过 IPC 通知主进程中止
+    // 监听器引用保存到 onAbort，在 finally 中移除，避免 AbortSignal 上的监听器泄漏
+    const onAbort = () => {
+      window.electronAPI!.ai.abort(requestId);
+    };
     if (signal) {
       if (signal.aborted) {
-        window.electronAPI!.ai.abort(requestId);
+        onAbort();
         cleanup();
         handler?.onComplete(fullContent);
         return fullContent;
       }
-      signal.addEventListener('abort', () => {
-        window.electronAPI!.ai.abort(requestId);
-      });
+      signal.addEventListener('abort', onAbort);
     }
 
     try {
@@ -336,6 +340,7 @@ export class LLMClient {
       handler?.onError(e instanceof Error ? e : new Error(String(e)));
       throw e;
     } finally {
+      if (signal) signal.removeEventListener('abort', onAbort);
       cleanup();
     }
   }
