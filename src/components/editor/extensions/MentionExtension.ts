@@ -52,7 +52,7 @@ export const MentionExtension = Node.create({
     ];
   },
 
-  renderHTML({ node, HTMLAttributes }: { node: PMNode; HTMLAttributes: Record<string, any> }): DOMOutputSpec {
+  renderHTML({ node, HTMLAttributes }: { node: PMNode; HTMLAttributes: Record<string, unknown> }): DOMOutputSpec {
     return [
       'span',
       mergeAttributes(HTMLAttributes, {

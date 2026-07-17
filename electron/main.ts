@@ -20,9 +20,12 @@ const FILE_VERSION = '1.0.0';
 // "Attempted to register a second handler for 'xxx'" 错误
 function safeIpcHandle(
   channel: string,
+  // IPC handler 的剩余参数由各调用方自行声明具体类型（如 filePath: string），
+  // 此处用 any[] 是合理的分发点，强制 unknown 会与调用方逆变冲突。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   listener: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => any,
 ): void {
-  try { ipcMain.removeHandler(channel); } catch {}
+  try { ipcMain.removeHandler(channel); } catch { /* 首次注册时无已存在 handler，忽略 */ }
   // 使用方括号访问避免与下方 replace_all 字面量冲突
   ipcMain['handle'](channel, listener);
 }
@@ -1136,7 +1139,7 @@ app.on('before-quit', () => {
   }
   // 中止所有进行中的 AI 请求，避免 fetch 句柄悬挂
   for (const controller of aiAbortControllers.values()) {
-    try { controller.abort(); } catch {}
+    try { controller.abort(); } catch { /* 已中止的 controller 再次 abort 会抛错，忽略 */ }
   }
   aiAbortControllers.clear();
 });

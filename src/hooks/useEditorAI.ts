@@ -93,7 +93,7 @@ export function useEditorAI({
       if (editor && !editor.isDestroyed) editor.setEditable(true);
       generatingChapterIdRef.current = null;
     }
-  }, [editor, setAIGenerating]);
+  }, [editor, setAIGenerating, isGeneratingRef]);
 
   const handleContinue = useCallback(async () => {
     if (!editor || !currentChapterId || !currentChapter || isGenerating) return;
@@ -208,12 +208,14 @@ export function useEditorAI({
       toast.error('AI 续写失败', msg);
     } finally {
       // 卸载后不再 setState；非主动中止且编辑器未销毁时才恢复可编辑状态
-      if (!mountedRef.current) return;
-      if (!abortControllerRef.current?.signal.aborted && !editor.isDestroyed) {
-        editor.setEditable(true);
+      // 不能在 finally 中 return（no-unsafe-finally），改用条件包裹
+      if (mountedRef.current) {
+        if (!abortControllerRef.current?.signal.aborted && !editor.isDestroyed) {
+          editor.setEditable(true);
+        }
+        setIsGenerating(false);
+        setAIGenerating(false);
       }
-      setIsGenerating(false);
-      setAIGenerating(false);
       abortControllerRef.current = null;
       generatingChapterIdRef.current = null;
     }
@@ -305,12 +307,14 @@ export function useEditorAI({
       toast.error('AI 润色失败', msg);
     } finally {
       // 卸载后不再 setState；非主动中止且编辑器未销毁时才恢复可编辑状态
-      if (!mountedRef.current) return;
-      if (!abortControllerRef.current?.signal.aborted && !editor.isDestroyed) {
-        editor.setEditable(true);
+      // 不能在 finally 中 return（no-unsafe-finally），改用条件包裹
+      if (mountedRef.current) {
+        if (!abortControllerRef.current?.signal.aborted && !editor.isDestroyed) {
+          editor.setEditable(true);
+        }
+        setIsGenerating(false);
+        setAIGenerating(false);
       }
-      setIsGenerating(false);
-      setAIGenerating(false);
       abortControllerRef.current = null;
       generatingChapterIdRef.current = null;
     }

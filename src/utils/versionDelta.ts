@@ -142,7 +142,8 @@ export function decodeDeltasToVersions(stored: StoredVersion[]): ChapterVersion[
     } else {
       content = applySimpleDiff(prevContent, s.delta);
     }
-    // 重建出的 ChapterVersion 不带 delta 字段
+    // 重建出的 ChapterVersion 不带 delta 字段；_delta 仅为剔除字段而解构
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { delta: _delta, ...rest } = s;
     result.push({ ...rest, content });
     prevContent = content;

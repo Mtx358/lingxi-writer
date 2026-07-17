@@ -477,7 +477,7 @@ function ChapterTitleItem({ chapter }: { chapter: Chapter }) {
     try {
       const result = await aiService.generateChapterTitleSuggestions(chapter);
       setSuggestions(result);
-    } catch (e) {
+    } catch {
       setError('生成失败，请稍后重试');
       setSuggestions([]);
     } finally {

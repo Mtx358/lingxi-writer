@@ -591,7 +591,7 @@ ${text.slice(0, 3000)}`;
       const result = await llmClient.callLLM(prompt, '你是一位专业的小说编辑，擅长分析小说章节质量。只返回JSON，不要其他内容。');
       // 先 trim 后尝试直接 JSON.parse，失败再回退到正则提取，避免贪婪 \{[\s\S]*\} 吞掉解释性文字中的 }
       const trimmed = result.trim();
-      let parsed: any;
+      let parsed: Record<string, unknown> | undefined;
       try {
         parsed = JSON.parse(trimmed);
       } catch {
@@ -668,7 +668,7 @@ ${chapterList || '（暂无章节）'}`;
       const result = await llmClient.callLLM(prompt, '你是一位专业的小说结构编辑。只返回JSON，不要其他内容。');
       // 先 trim 后尝试直接 JSON.parse，失败再回退到正则提取，避免贪婪 \{[\s\S]*\} 吞掉解释性文字中的 }
       const trimmed = result.trim();
-      let parsed: any;
+      let parsed: Record<string, unknown> | undefined;
       try {
         parsed = JSON.parse(trimmed);
       } catch {
@@ -727,7 +727,7 @@ ${chapterList || '（暂无章节）'}`;
       const result = await llmClient.callLLM(prompt, '你是一位专业的小说编辑，擅长检测文风一致性。只返回JSON。');
       // 先 trim 后尝试直接 JSON.parse，失败再回退到正则提取，避免贪婪 \{[\s\S]*\} 吞掉解释性文字中的 }
       const trimmed = result.trim();
-      let parsed: any;
+      let parsed: Record<string, unknown> | undefined;
       try {
         parsed = JSON.parse(trimmed);
       } catch {
