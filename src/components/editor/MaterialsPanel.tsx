@@ -4,78 +4,16 @@ import { useAppStore } from '@/store/useAppStore';
 import { MATERIAL_TYPE_LABELS, MATERIAL_TYPES, DEFAULT_MATERIAL_TYPE } from '@/types';
 import type { Material, MaterialAttachment } from '@/types';
 import { generateId } from '@/utils/storage';
-import { IMAGE_CACHE_MAX_ENTRIES, IMAGE_ERROR_CACHE_TTL_MS } from '@/constants/config';
+// 图片 dataURL LRU 缓存与清理函数已抽离到 utils/imageCache，供组件层与 store 层共享，
+// 避免 store 反向 import 组件层形成循环依赖。
+import { readImageDataUrl, clearImageCache, clearImageErrorCache } from '@/utils/imageCache';
 
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'];
 const AUDIO_EXTS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'];
 
-// 模块级 LRU 缓存：file:// 路径 -> dataURL Promise。
-// ImageFallback 每次渲染都会重新触发 electron bridge 读取，滚动列表时产生大量重复 IO 与内存峰值。
-// 通过缓存层使相同路径只读取一次；命中时 bump 到队尾以维持 LRU 顺序。
-const imageDataUrlCache = new Map<string, Promise<string>>();
-// 错误缓存：path -> 失败时间戳。带 TTL，避免用户修复/移动图片后仍命中旧错误而永久占位。
-const imageDataUrlErrors = new Map<string, number>();
-
-const readImageDataUrl = (filePath: string): Promise<string> => {
-  // 命中：删除后重新插入，将其挪到 LRU 队尾
-  if (imageDataUrlCache.has(filePath)) {
-    const promise = imageDataUrlCache.get(filePath)!;
-    imageDataUrlCache.delete(filePath);
-    imageDataUrlCache.set(filePath, promise);
-    return promise;
-  }
-  // 已知失败：避免对同一损坏文件反复触发读取；但带 TTL，过期后允许重试
-  const failedAt = imageDataUrlErrors.get(filePath);
-  if (failedAt !== undefined) {
-    if (Date.now() - failedAt < IMAGE_ERROR_CACHE_TTL_MS) {
-      return Promise.reject(new Error('cached read failure'));
-    }
-    // 过期：清除错误缓存，重新尝试读取（用户可能已修复文件）
-    imageDataUrlErrors.delete(filePath);
-  }
-
-  const electronAPI = window.electronAPI as unknown as { file?: { readDataURL?: (p: string) => Promise<string> } } | undefined;
-  const reader = electronAPI?.file?.readDataURL ?? (() => Promise.reject(new Error('electron bridge unavailable')));
-  const promise = (reader as (p: string) => Promise<string>)(filePath).catch(err => {
-    imageDataUrlCache.delete(filePath);
-    imageDataUrlErrors.set(filePath, Date.now());
-    throw err;
-  });
-  imageDataUrlCache.set(filePath, promise);
-
-  // LRU 淘汰：超过上限时丢弃最久未访问（队首）的条目
-  while (imageDataUrlCache.size > IMAGE_CACHE_MAX_ENTRIES) {
-    const oldest = imageDataUrlCache.keys().next().value;
-    if (oldest === undefined) break;
-    imageDataUrlCache.delete(oldest);
-  }
-  return promise;
-};
-
-/**
- * 清空图片错误缓存（可选传入 path 仅清单个）。
- * 用于附件列表刷新、用户手动"重新加载"等场景，确保已修复的图片能立即重试读取。
- */
-export function clearImageErrorCache(path?: string): void {
-  if (path) {
-    imageDataUrlErrors.delete(path);
-  } else {
-    imageDataUrlErrors.clear();
-  }
-}
-
-/**
- * 清空图片 dataURL 成功缓存（可选传入 path 仅清单个）。
- * 项目切换或主动释放内存时调用：模块级缓存跨项目共享，长期使用会导致内存上涨。
- * 注意：组件内部不会自动调用，由调用方（如项目切换钩子）按需触发。
- */
-export function clearImageCache(path?: string): void {
-  if (path) {
-    imageDataUrlCache.delete(path);
-  } else {
-    imageDataUrlCache.clear();
-  }
-}
+// 重新导出清理函数，保持组件层调用方（如 handleAddAttachment 内的 clearImageErrorCache）
+// 与历史导入路径兼容；新代码请直接从 '@/utils/imageCache' 导入。
+export { clearImageCache, clearImageErrorCache };
 
 function getAttachmentIcon(ext: string) {
   if (IMAGE_EXTS.includes(ext)) return Image;
@@ -103,8 +41,8 @@ function ImageFallback({ src, name }: { src: string; name: string }) {
     setError(false);
     setResolvedSrc(src);
     if (src.startsWith('file://')) {
-      const electronAPI = window.electronAPI as unknown as { file?: { readDataURL?: (p: string) => Promise<string> } } | undefined;
-      if (electronAPI?.file?.readDataURL) {
+      // window.electronAPI 的完整类型已在 vite-env.d.ts 全局声明，无需重复断言
+      if (window.electronAPI?.file?.readDataURL) {
         readImageDataUrl(src.replace('file://', ''))
           .then(dataUrl => { if (active) setResolvedSrc(dataUrl); })
           .catch(() => { if (active) setError(true); });
@@ -212,8 +150,8 @@ export default function MaterialsPanel() {
     const next = (mat.attachments || []).filter(a => a.id !== att.id);
     updateMaterial(mat.id, { attachments: next });
     // 尝试删除磁盘副本：bridge 不支持或失败时静默忽略（用户已确认移除记录）
-    const api = window.electronAPI as unknown as { material?: { deleteAttachment?: (p: string) => Promise<void> } } | undefined;
-    api?.material?.deleteAttachment?.(att.path).catch(() => { /* 静默：记录已移除即可 */ });
+    // window.electronAPI 类型已在 vite-env.d.ts 全局声明，无需重复断言
+    window.electronAPI?.material?.deleteAttachment(att.path).catch(() => { /* 静默：记录已移除即可 */ });
   };
 
   // 注意：必须先复制再 sort，否则会原地修改 store 数组，引发 zustand 选择器引用不变

@@ -29,7 +29,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { toast } from '@/hooks/useToast';
-import { CHAPTER_MAX_LEVEL } from '@/constants/config';
+import { CHAPTER_MAX_LEVEL, CHAPTER_BATCH_MERGE_MIN } from '@/constants/config';
 import type { Chapter, ChapterLevelType, Character, Foreshadow } from '@/types';
 import {
   CHAPTER_STATUS_COLORS,
@@ -968,9 +968,9 @@ export default function OutlinePanel() {
   }, [selectedIds, chapters, deleteChapter]);
 
   const handleBatchMerge = useCallback(() => {
-    if (selectedIds.size < 2) return;
+    if (selectedIds.size < CHAPTER_BATCH_MERGE_MIN) return;
     const selectedChapters = chapters.filter(c => selectedIds.has(c.id));
-    if (selectedChapters.length < 2) return;
+    if (selectedChapters.length < CHAPTER_BATCH_MERGE_MIN) return;
     const firstChapter = selectedChapters[0];
     if (!confirm(`确定合并选中的 ${selectedChapters.length} 个章节吗？\n\n内容将按顺序拼接到首个章节"${firstChapter.title}"中，其余章节将被删除。`)) {
       return;
@@ -979,7 +979,33 @@ export default function OutlinePanel() {
     saveVersion(firstChapter.id, '批量合并前快照');
     // HTML 直接拼接：用 '\n' 拼接多段 HTML 会产生破损 HTML（多余文本节点、未闭合标签交错）
     const mergedContent = selectedChapters.map(c => c.content || '').join('');
-    updateChapter(firstChapter.id, { content: mergedContent });
+    // 元数据合并策略：
+    //   - characterFocus / foreshadows：取并集并去重（ID 维度），保留所有被合并章节涉及的角色与伏笔
+    //   - keyEvents：按章节顺序拼接，保留时间线脉络
+    //   - summary / perspective / theme / notes：以首章节为准，避免主观描述相互覆盖
+    //   - status：取"最靠后"的状态（draft < writing < reviewing < done），反映合并后整体进度
+    const statusOrder: Record<Chapter['status'], number> = { draft: 0, writing: 1, reviewing: 2, done: 3 };
+    const mergeStringArray = (key: 'characterFocus' | 'keyEvents' | 'foreshadows') => {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const c of selectedChapters) {
+        for (const v of c[key] || []) {
+          if (!seen.has(v)) { seen.add(v); out.push(v); }
+        }
+      }
+      return out.length > 0 ? out : undefined;
+    };
+    const mergedStatus = selectedChapters.reduce<Chapter['status']>(
+      (acc, c) => statusOrder[c.status] > statusOrder[acc] ? c.status : acc,
+      firstChapter.status,
+    );
+    updateChapter(firstChapter.id, {
+      content: mergedContent,
+      characterFocus: mergeStringArray('characterFocus'),
+      keyEvents: mergeStringArray('keyEvents'),
+      foreshadows: mergeStringArray('foreshadows'),
+      status: mergedStatus,
+    });
     selectedIds.forEach(id => {
       if (id !== firstChapter.id) deleteChapter(id);
     });

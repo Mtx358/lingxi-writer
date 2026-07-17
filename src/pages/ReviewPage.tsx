@@ -62,6 +62,10 @@ export default function ReviewPage() {
   // I2: 记录上次分析的章节内容哈希（chapterId -> hash），仅对变更章节重新分析
   const chapterHashRef = useRef<Map<string, string>>(new Map());
   // I2: 记录上次结构分析的整书哈希，仅当章节集合/内容变化时重新执行结构分析
+  // 设计说明：结构分析（节奏曲线、情感弧线、跨章冲突）对单章内容也敏感——
+  // 例如某章新增高潮场景会改变整书节奏判断，故采用"章节ID+内容哈希"组合作为整书哈希，
+  // 任意一章内容变化都触发重新分析。若未来确认结构分析仅需骨架敏感（增删/排序），
+  // 可将 combinedStructureInput 改为只拼接 ch.id + ch.title + ch.order，剥离内容哈希。
   const structureHashRef = useRef<string>('');
   // I2: 缓存上次的章节分析结果，未变更章节直接复用，避免重复请求
   const chapterAnalysesRef = useRef<Record<string, ChapterAnalysis>>({});

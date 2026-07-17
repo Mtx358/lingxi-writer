@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Wand2,
   TrendingUp,
@@ -81,12 +81,31 @@ export default function OutlinePolishPanel() {
   // O2: 标记是否已执行过真实分析，未分析时所有诊断区均显示占位态
   const [hasAnalyzed, setHasAnalyzed] = useState(false);
 
+  // AbortController 守卫：重复点击"全面分析"或组件卸载时中止上一次请求，
+  // 避免旧请求晚返回覆盖新结果（竞态）与卸载后 setState。
+  // 注：aiService.analyzeStructure 走非流式 callLLM，此处 abort 仅丢弃结果，
+  // 不真正中断后端 HTTP 请求；如需真正中止需为 callLLM 增加 signal 透传。
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+    };
+  }, []);
+
   const mainChapters = chapters.filter(c => c.levelType === 'chapter');
 
   const handleAnalyze = async () => {
+    // 中止上一个进行中的分析请求，确保只有最新一次的结果会写入 state
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setAnalyzing(true);
     try {
       const result = await aiService.analyzeStructure(chapters);
+      // 请求返回后若已被后续请求/卸载中止，则丢弃结果，避免竞态覆盖
+      if (controller.signal.aborted) return;
 
       const mappedIssues: StructureIssue[] = result.issues.map(issue => {
         const chapter = chapters.find(c => c.id === issue.chapterId);
@@ -106,7 +125,12 @@ export default function OutlinePolishPanel() {
       setPacingData(pacing);
       setHasAnalyzed(true);
     } finally {
-      setAnalyzing(false);
+      // 仅当本次请求仍是活跃请求时才复位 loading，避免旧请求的 finally
+      // 把新请求刚设置的 analyzing=true 误置为 false
+      if (abortRef.current === controller) {
+        setAnalyzing(false);
+        abortRef.current = null;
+      }
     }
   };
 

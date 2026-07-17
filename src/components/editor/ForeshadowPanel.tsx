@@ -3,6 +3,7 @@ import { Plus, Flag, AlertCircle, CheckCircle2, Clock, XCircle, ChevronRight } f
 import { useAppStore } from '@/store/useAppStore';
 import { FORESHADOW_STATUS_LABELS, FORESHADOW_STATUSES, DEFAULT_FORESHADOW_STATUS } from '@/types';
 import type { Foreshadow } from '@/types';
+import { FORESHADOW_STALE_THRESHOLD } from '@/constants/config';
 
 const STATUS_CONFIG: Record<Foreshadow['status'], { icon: typeof Flag; color: string; bgColor: string }> = {
   planted: { icon: Flag, color: 'text-amber-400', bgColor: 'bg-amber-400/10' },
@@ -119,7 +120,7 @@ export default function ForeshadowPanel() {
             const config = STATUS_CONFIG[f.status];
             const isExpanded = expandedId === f.id;
             const chaptersSince = f.chaptersSinceMention;
-            const isWarning = f.status === 'planted' && chaptersSince >= 5;
+            const isWarning = f.status === 'planted' && chaptersSince >= FORESHADOW_STALE_THRESHOLD;
 
             return (
               <div

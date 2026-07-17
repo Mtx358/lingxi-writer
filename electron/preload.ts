@@ -72,12 +72,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     writeBuffer: (filePath: string, base64Data: string) =>
       invokeWithTimeout('storage:writeFileBuffer', 30000, filePath, base64Data),
     openExternal: (filePath: string) => invokeWithTimeout('file:openExternal', 10000, filePath),
+    // 读取素材附件为 data URL（主进程校验路径须位于 userData 内），供 <img src> 渲染
+    readDataURL: (filePath: string) => invokeWithTimeout('file:readDataURL', 15000, filePath) as Promise<string>,
   },
 
   // 素材附件：复制源文件到项目数据目录，返回持久化路径
   material: {
     saveAttachment: (sourcePath: string, projectId: string, attachmentId: string) =>
       invokeWithTimeout('material:saveAttachment', 60000, sourcePath, projectId, attachmentId) as Promise<string | null>,
+    // 删除磁盘副本；主进程会校验路径必须位于 materials/ 子目录内，越权路径返回 false
+    deleteAttachment: (targetPath: string) =>
+      invokeWithTimeout('material:deleteAttachment', 15000, targetPath) as Promise<boolean>,
   },
 
   system: {

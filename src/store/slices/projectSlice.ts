@@ -14,6 +14,9 @@ import { createDefaultProject, createSampleProject } from '@/constants/mockData'
 import { encodeVersionsToDeltas, decodeDeltasToVersions } from '@/utils/versionDelta';
 import { toast } from '@/hooks/useToast';
 import { disposeSearchWorker } from './uiSlice';
+// 图片 dataURL 缓存为模块级单例 Map（utils/imageCache），跨项目共享。
+// 项目切换/关闭时主动清理，释放上一项目的图片 dataURL 占用，避免长期内存上涨。
+import { clearImageCache, clearImageErrorCache } from '@/utils/imageCache';
 
 type ProjectSlice = Pick<AppState,
   | 'projects' | 'currentProjectId' | 'currentProjectFilePath' | 'lastSavedAt' | 'isSaving'
@@ -79,6 +82,12 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   },
 
   openProject: async (projectId: string) => {
+    // 切换项目时清理上一项目的素材图片缓存（与 closeProject 一致），
+    // 覆盖"从项目 A 直接打开项目 B"不经过 closeProject 的场景
+    if (get().currentProjectId && get().currentProjectId !== projectId) {
+      clearImageCache();
+      clearImageErrorCache();
+    }
     const projects = get().projects.map(p =>
       p.id === projectId ? { ...p, lastOpenedAt: new Date().toISOString() } : p
     );
@@ -135,6 +144,13 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     if (!data) return false;
 
     const { project, chapters, characters, settingCategories, settingItems, foreshadows, materials, versions } = data;
+
+    // 切换项目文件时清理上一项目的素材图片缓存（与 closeProject 一致），
+    // 覆盖"从项目 A 直接打开项目文件 B"不经过 closeProject 的场景
+    if (get().currentProjectId && get().currentProjectId !== project.id) {
+      clearImageCache();
+      clearImageErrorCache();
+    }
 
     const projects = [...get().projects.filter(p => p.id !== project.id), project];
     void storage.set('projects', projects);
@@ -262,6 +278,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     clearAutoSaveTimer();
     // 关闭项目时终止搜索 Worker，释放子线程资源并防止监听器泄漏
     disposeSearchWorker();
+    // 清理素材图片缓存：模块级 Map 跨项目共享，不清理会导致上一项目的 dataURL
+    // 长期驻留内存，多项目切换后内存持续上涨，且错误缓存会跨项目残留
+    clearImageCache();
+    clearImageErrorCache();
     set({
       currentProjectId: null,
       currentProjectFilePath: null,

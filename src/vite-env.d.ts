@@ -44,11 +44,15 @@ interface ElectronFileAPI {
   write: (filePath: string, data: string, encoding?: string) => Promise<boolean>;
   writeBuffer: (filePath: string, base64Data: string) => Promise<boolean>;
   openExternal: (filePath: string) => Promise<boolean>;
+  /** 读取素材附件为 data URL（主进程校验路径须位于 userData 内） */
+  readDataURL: (filePath: string) => Promise<string>;
 }
 
 interface ElectronMaterialAPI {
   /** 复制源文件到项目数据目录，返回持久化后的绝对路径；失败返回 null */
   saveAttachment: (sourcePath: string, projectId: string, attachmentId: string) => Promise<string | null>;
+  /** 删除磁盘副本；主进程校验路径必须位于 materials/ 子目录内，越权或失败返回 false */
+  deleteAttachment: (targetPath: string) => Promise<boolean>;
 }
 
 interface ElectronSystemAPI {

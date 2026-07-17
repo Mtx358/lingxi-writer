@@ -73,3 +73,9 @@ export const REVIEW_ANALYSIS_DEBOUNCE_MS = 2000;
 
 /** 审稿中心章节分析最大并发数：限制同时发起的 AI 请求数，避免打满 API 配额触发限流 */
 export const REVIEW_ANALYSIS_CONCURRENCY = 3;
+
+/** 伏笔超时预警阈值（章）：planted 状态的伏笔距离上次被提及超过 N 章即触发预警 */
+export const FORESHADOW_STALE_THRESHOLD = 5;
+
+/** 章节批量合并最小选中数：少于 2 个章节不允许合并 */
+export const CHAPTER_BATCH_MERGE_MIN = 2;

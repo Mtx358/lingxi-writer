@@ -618,6 +618,58 @@ function registerStorageHandlers() {
     }
   });
 
+  // 素材附件删除：用户移除附件记录时，同步删除磁盘副本释放空间。
+  // 安全：targetPath 必须解析到 userData/materials/ 子目录内，防止渲染层被 XSS 后
+  // 传入任意路径删除系统文件（如 ~/.ssh/、/etc/）。路径校验用 realpath 解析符号链接。
+  safeIpcHandle('material:deleteAttachment', async (_event, targetPath: string) => {
+    if (!targetPath || typeof targetPath !== 'string') return false;
+    try {
+      const materialsRoot = path.join(getDataDir(), 'materials');
+      const resolved = await fs.realpath(targetPath).catch(() => null);
+      if (!resolved) return false; // 文件已不存在视为删除成功无意义，返回 false 让调用方静默忽略
+      const resolvedRoot = await fs.realpath(materialsRoot).catch(() => materialsRoot);
+      const rel = path.relative(resolvedRoot, resolved);
+      // relative 返回不以 '..' 开头且非绝对路径，才说明 resolved 在 materialsRoot 之内
+      if (rel.startsWith('..') || path.isAbsolute(rel)) {
+        console.error('deleteAttachment: targetPath escapes materials dir', targetPath);
+        return false;
+      }
+      await fs.unlink(resolved);
+      return true;
+    } catch (e) {
+      console.error('删除素材附件失败:', e);
+      return false;
+    }
+  });
+
+  // 读取素材附件为 data URL，供 <img src> 直接渲染。
+  // 开发环境（http/https）无法加载 file:// 资源，需通过 bridge 读取为 data URL。
+  // 安全：路径必须位于 userData 目录内（素材附件持久化在 materials/<projectId>/），
+  // 防止渲染层被 XSS 后读取系统敏感文件（如 ~/.ssh/id_rsa）。
+  const MIME_BY_EXT: Record<string, string> = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+    webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml',
+  };
+  safeIpcHandle('file:readDataURL', async (_event, filePath: string) => {
+    if (!filePath || typeof filePath !== 'string') {
+      return Promise.reject(new Error('invalid filePath'));
+    }
+    if (!isInsideDataDir(filePath)) {
+      console.error('readDataURL: path outside data dir', filePath);
+      return Promise.reject(new Error('path outside data dir'));
+    }
+    try {
+      const resolved = path.resolve(filePath);
+      const buffer = await fs.readFile(resolved);
+      const ext = path.extname(resolved).slice(1).toLowerCase();
+      const mime = MIME_BY_EXT[ext] || 'application/octet-stream';
+      return `data:${mime};base64,${buffer.toString('base64')}`;
+    } catch (e) {
+      console.error('readDataURL 失败:', e);
+      return Promise.reject(e instanceof Error ? e : new Error(String(e)));
+    }
+  });
+
   safeIpcHandle('storage:encrypt', async (_event, plainText: string) => {
     if (!plainText || typeof plainText !== 'string') return null;
     // safeStorage 不可用时拒绝加密，调用方据此不应落盘明文 apiKey
