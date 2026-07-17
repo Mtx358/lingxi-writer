@@ -62,6 +62,10 @@ const LEVEL_ICONS: Record<ChapterLevelType, React.ComponentType<{ className?: st
   chapter: FileText,
 };
 
+// 永不变化的空数组常量，作为无子节点时的稳定回退引用，
+// 避免每次渲染 `?? []` 创建新数组使 memo 失效。
+const EMPTY_CHILDREN: Chapter[] = [];
+
 function ChapterNodeComponent({
   chapter,
   depth = 0,
@@ -70,20 +74,24 @@ function ChapterNodeComponent({
   onSelect,
   isSelected,
   isMultiSelected = false,
+  // 父组件预先过滤并排序好的直接子节点，避免每个 ChapterNode 都订阅全量 chapters。
+  // 此前每节点 useAppStore(s => s.chapters) 在任意章节变更时都会生成新数组引用，
+  // 使 memo 失效触发全树重渲染，>100 章时拖拽/折叠明显卡顿。
+  children,
+  // 全树共享的 childrenByParent 映射，用于递归渲染深层子节点。
+  // 由 OutlinePanel 用 useMemo 一次性计算并稳定引用，避免每节点重新过滤。
+  childrenByParent,
 }: {
   chapter: Chapter;
   depth?: number;
-  // 传整个 Set 是必要的：嵌套节点的折叠状态需经父链向下传递，
-  // 仅传当前节点 expanded 布尔会导致深层节点折叠后无法被根节点重渲染链路触达。
-  // 真正的性能瓶颈在于父级回调（onToggleExpanded/onSelect）未做 useCallback 稳定，
-  // 每次 OutlinePanel 重渲染都会生成新函数引用使 memo 全部失效——已在 OutlinePanel 中修复。
   collapsedIds: Set<string>;
   onToggleExpanded: (id: string) => void;
   onSelect: (chapter: Chapter, e?: React.MouseEvent) => void;
   isSelected: boolean;
   isMultiSelected?: boolean;
+  children: Chapter[];
+  childrenByParent: Map<string | null, Chapter[]>;
 }) {
-  const chapters = useAppStore(s => s.chapters);
   const updateChapter = useAppStore(s => s.updateChapter);
   const deleteChapter = useAppStore(s => s.deleteChapter);
   const addChapter = useAppStore(s => s.addChapter);
@@ -107,10 +115,6 @@ function ChapterNodeComponent({
   } = useSortable({ id: chapter.id });
 
   const expanded = !collapsedIds.has(chapter.id);
-
-  const children = chapters
-    .filter(c => c.parentId === chapter.id)
-    .sort((a, b) => a.order - b.order);
 
   const hasChildren = children.length > 0;
   const LevelIcon = LEVEL_ICONS[chapter.levelType];
@@ -338,6 +342,8 @@ function ChapterNodeComponent({
               onSelect={onSelect}
               isSelected={isSelected}
               isMultiSelected={isMultiSelected}
+              children={childrenByParent.get(child.id) ?? EMPTY_CHILDREN}
+              childrenByParent={childrenByParent}
             />
           ))}
         </div>
@@ -346,8 +352,9 @@ function ChapterNodeComponent({
   );
 }
 
-// memo 比较仅在当前节点自身 expanded 状态变化时才重渲染；
-// 父级回调已用 useCallback 稳定，避免每次 OutlinePanel 重渲染生成新引用使 memo 失效。
+// memo 比较：仅在当前节点自身 props 变化时才重渲染；
+// 父级回调已用 useCallback 稳定，children 与 childrenByParent 由父组件 useMemo 稳定引用，
+// 避免每次 OutlinePanel 重渲染生成新引用使 memo 失效。
 const ChapterNode = memo(ChapterNodeComponent, (prev, next) => {
   if (prev.chapter !== next.chapter) return false;
   if (prev.depth !== next.depth) return false;
@@ -355,6 +362,8 @@ const ChapterNode = memo(ChapterNodeComponent, (prev, next) => {
   if (prev.isMultiSelected !== next.isMultiSelected) return false;
   if (prev.onToggleExpanded !== next.onToggleExpanded) return false;
   if (prev.onSelect !== next.onSelect) return false;
+  if (prev.children !== next.children) return false;
+  if (prev.childrenByParent !== next.childrenByParent) return false;
   if (prev.collapsedIds !== next.collapsedIds) {
     const prevHas = prev.collapsedIds.has(prev.chapter.id);
     const nextHas = next.collapsedIds.has(next.chapter.id);
@@ -744,20 +753,36 @@ export default function OutlinePanel() {
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   );
 
-  const filteredChapters = filterStatus === 'all' 
-    ? chapters 
+  const filteredChapters = filterStatus === 'all'
+    ? chapters
     : chapters.filter(c => c.status === filterStatus);
 
-  const rootChapters = filteredChapters
-    .filter(c => c.parentId === null)
-    .sort((a, b) => a.order - b.order);
+  // 全树共享的 parentId -> 已排序子节点数组映射。
+  // 通过 useMemo 在 chapters/filterStatus 变更时才重新计算，引用稳定，
+  // 传给所有 ChapterNode 后 memo 比较能精准跳过未变节点，避免全树重渲染。
+  const childrenByParent = useMemo(() => {
+    const map = new Map<string | null, Chapter[]>();
+    for (const ch of filteredChapters) {
+      const key = ch.parentId;
+      let arr = map.get(key);
+      if (!arr) {
+        arr = [];
+        map.set(key, arr);
+      }
+      arr.push(ch);
+    }
+    for (const arr of map.values()) {
+      arr.sort((a, b) => a.order - b.order);
+    }
+    return map;
+  }, [filteredChapters]);
+
+  const rootChapters = childrenByParent.get(null) ?? EMPTY_CHILDREN;
 
   const visibleIds = useMemo(() => {
     const result: string[] = [];
     const walk = (parentId: string | null) => {
-      const siblings = filteredChapters
-        .filter(c => c.parentId === parentId)
-        .sort((a, b) => a.order - b.order);
+      const siblings = childrenByParent.get(parentId) ?? EMPTY_CHILDREN;
       for (const ch of siblings) {
         result.push(ch.id);
         if (!collapsedIds.has(ch.id)) {
@@ -767,7 +792,7 @@ export default function OutlinePanel() {
     };
     walk(null);
     return result;
-  }, [filteredChapters, collapsedIds]);
+  }, [childrenByParent, collapsedIds]);
 
   const handleToggleExpanded = useCallback((id: string) => {
     setCollapsedIds(prev => {
@@ -837,6 +862,28 @@ export default function OutlinePanel() {
       // 作为同级排序
       newParentId = overChapter.parentId;
       newOrder = dropBelow ? overChapter.order + 1 : overChapter.order;
+    }
+
+    // I4: 拖拽父章节时，预判整个子树移动后的最大深度，避免子节点超过 CHAPTER_MAX_LEVEL。
+    // moveChapter 内部也有同样校验（getSubtreeMaxDepth），但提前预判可在不修改 store 的情况下
+    // 给出明确的中文提示，避免用户重复尝试。
+    if (newParentId !== oldParentId) {
+      const getSubtreeMaxDepth = (rootId: string): number => {
+        const kids = chapters.filter(c => c.parentId === rootId);
+        if (kids.length === 0) return 1;
+        return 1 + Math.max(...kids.map(k => getSubtreeMaxDepth(k.id)));
+      };
+      const subtreeDepth = getSubtreeMaxDepth(draggedId);
+      const targetLevel = newParentId
+        ? (chapters.find(c => c.id === newParentId)?.level ?? 0) + 1
+        : 1;
+      if (targetLevel + subtreeDepth - 1 > CHAPTER_MAX_LEVEL) {
+        toast.warning(
+          '无法移动到该位置',
+          `移动后子树最深层级将达到 ${targetLevel + subtreeDepth - 1}，超过 ${CHAPTER_MAX_LEVEL} 级上限。请先扁平化子章节或选择更浅的目标层级。`,
+        );
+        return;
+      }
     }
 
     const moved = moveChapter(draggedId, newParentId, newOrder);
@@ -1003,6 +1050,8 @@ export default function OutlinePanel() {
                   onSelect={handleSelect}
                   isSelected={selectedChapter?.id === chapter.id}
                   isMultiSelected={selectedIds.has(chapter.id)}
+                  children={childrenByParent.get(chapter.id) ?? EMPTY_CHILDREN}
+                  childrenByParent={childrenByParent}
                 />
               ))}
 

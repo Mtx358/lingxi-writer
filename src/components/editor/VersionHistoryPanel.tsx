@@ -22,7 +22,8 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
   const [selectedVersion, setSelectedVersion] = useState<ChapterVersion | null>(null);
   // 统一使用 HTML 块级 diff 作为单一数据源，消除行级/块级双轨索引映射
   const [htmlDiffResult, setHtmlDiffResult] = useState<HtmlBlockDiff[]>([]);
-  const [acceptedBlocks, setAcceptedBlocks] = useState<Set<number>>(new Set());
+  // I3: diff 应用规则为“勾选要撤销的修改”——拒绝的段落回退到旧版本，其余全部保留新版本。
+  // 此前存在的 acceptedBlocks 仅为 UI 高亮、无业务作用，已移除以避免“需逐个点接受才保留”的误解。
   const [rejectedBlocks, setRejectedBlocks] = useState<Set<number>>(new Set());
   const [versionName, setVersionName] = useState('');
   const [showSaveDialog, setShowSaveDialog] = useState(false);
@@ -42,7 +43,6 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
         // 单一数据源：仅计算 HTML 块级 diff，展示与应用共享同一套索引
         const htmlDiff = computeHtmlBlockDiff(selectedVersion.content, currentChapter.content);
         setHtmlDiffResult(htmlDiff);
-        setAcceptedBlocks(new Set());
         setRejectedBlocks(new Set());
         setIsComputingDiff(false);
       }, 30);
@@ -67,28 +67,15 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
     }
   };
 
-  const handleAcceptBlock = (index: number) => {
-    setAcceptedBlocks(prev => {
-      const next = new Set(prev);
-      next.add(index);
-      return next;
-    });
-    setRejectedBlocks(prev => {
-      const next = new Set(prev);
-      next.delete(index);
-      return next;
-    });
-  };
-
+  // I3: 仅保留“拒绝”操作。拒绝 = 标记该段落回退到旧版本；未标记的段落一律保留新版本。
   const handleRejectBlock = (index: number) => {
     setRejectedBlocks(prev => {
       const next = new Set(prev);
-      next.add(index);
-      return next;
-    });
-    setAcceptedBlocks(prev => {
-      const next = new Set(prev);
-      next.delete(index);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
       return next;
     });
   };
@@ -309,6 +296,11 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
             </span>
           </div>
 
+          {/* I3: diff 应用规则说明，避免“接受/拒绝”按钮语义混淆 */}
+          <div className="px-3 py-1.5 border-b border-ink-800/50 bg-ink-800/20 text-[10px] text-ink-500 leading-relaxed">
+            规则：默认保留当前版本的全部修改。点击段落右侧的 <span className="text-red-400">✕</span> 标记要撤销的段落，再点“应用更改”将这些段落回退到旧版本；未标记的段落保持不变。
+          </div>
+
           {/* Diff Content */}
           <div className="flex-1 overflow-y-auto">
             {isComputingDiff ? (
@@ -420,24 +412,13 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
                     {block.type !== 'unchanged' && (
                       <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 pr-1">
                         <button
-                          onClick={() => handleAcceptBlock(idx)}
-                          className={`p-0.5 rounded ${
-                            acceptedBlocks.has(idx)
-                              ? 'text-emerald-400 bg-emerald-400/20'
-                              : 'text-ink-500 hover:text-emerald-400 hover:bg-ink-700'
-                          }`}
-                          title="接受修改"
-                        >
-                          <Check className="w-3 h-3" />
-                        </button>
-                        <button
                           onClick={() => handleRejectBlock(idx)}
                           className={`p-0.5 rounded ${
                             rejectedBlocks.has(idx)
                               ? 'text-red-400 bg-red-400/20'
                               : 'text-ink-500 hover:text-red-400 hover:bg-ink-700'
                           }`}
-                          title="拒绝修改"
+                          title={rejectedBlocks.has(idx) ? '取消撤销' : '撤销此段落（回退到旧版本）'}
                         >
                           <X className="w-3 h-3" />
                         </button>

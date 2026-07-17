@@ -4,7 +4,7 @@ import { useAppStore } from '@/store/useAppStore';
 import { MATERIAL_TYPE_LABELS, MATERIAL_TYPES, DEFAULT_MATERIAL_TYPE } from '@/types';
 import type { Material, MaterialAttachment } from '@/types';
 import { generateId } from '@/utils/storage';
-import { IMAGE_CACHE_MAX_ENTRIES } from '@/constants/config';
+import { IMAGE_CACHE_MAX_ENTRIES, IMAGE_ERROR_CACHE_TTL_MS } from '@/constants/config';
 
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'];
 const AUDIO_EXTS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'];
@@ -13,7 +13,8 @@ const AUDIO_EXTS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'];
 // ImageFallback 每次渲染都会重新触发 electron bridge 读取，滚动列表时产生大量重复 IO 与内存峰值。
 // 通过缓存层使相同路径只读取一次；命中时 bump 到队尾以维持 LRU 顺序。
 const imageDataUrlCache = new Map<string, Promise<string>>();
-const imageDataUrlErrors = new Set<string>();
+// 错误缓存：path -> 失败时间戳。带 TTL，避免用户修复/移动图片后仍命中旧错误而永久占位。
+const imageDataUrlErrors = new Map<string, number>();
 
 const readImageDataUrl = (filePath: string): Promise<string> => {
   // 命中：删除后重新插入，将其挪到 LRU 队尾
@@ -23,16 +24,21 @@ const readImageDataUrl = (filePath: string): Promise<string> => {
     imageDataUrlCache.set(filePath, promise);
     return promise;
   }
-  // 已知失败：避免对同一损坏文件反复触发读取
-  if (imageDataUrlErrors.has(filePath)) {
-    return Promise.reject(new Error('cached read failure'));
+  // 已知失败：避免对同一损坏文件反复触发读取；但带 TTL，过期后允许重试
+  const failedAt = imageDataUrlErrors.get(filePath);
+  if (failedAt !== undefined) {
+    if (Date.now() - failedAt < IMAGE_ERROR_CACHE_TTL_MS) {
+      return Promise.reject(new Error('cached read failure'));
+    }
+    // 过期：清除错误缓存，重新尝试读取（用户可能已修复文件）
+    imageDataUrlErrors.delete(filePath);
   }
 
   const electronAPI = window.electronAPI as unknown as { file?: { readDataURL?: (p: string) => Promise<string> } } | undefined;
   const reader = electronAPI?.file?.readDataURL ?? (() => Promise.reject(new Error('electron bridge unavailable')));
   const promise = (reader as (p: string) => Promise<string>)(filePath).catch(err => {
     imageDataUrlCache.delete(filePath);
-    imageDataUrlErrors.add(filePath);
+    imageDataUrlErrors.set(filePath, Date.now());
     throw err;
   });
   imageDataUrlCache.set(filePath, promise);
@@ -45,6 +51,18 @@ const readImageDataUrl = (filePath: string): Promise<string> => {
   }
   return promise;
 };
+
+/**
+ * 清空图片错误缓存（可选传入 path 仅清单个）。
+ * 用于附件列表刷新、用户手动"重新加载"等场景，确保已修复的图片能立即重试读取。
+ */
+export function clearImageErrorCache(path?: string): void {
+  if (path) {
+    imageDataUrlErrors.delete(path);
+  } else {
+    imageDataUrlErrors.clear();
+  }
+}
 
 function getAttachmentIcon(ext: string) {
   if (IMAGE_EXTS.includes(ext)) return Image;
@@ -149,6 +167,8 @@ export default function MaterialsPanel() {
     const attachmentId = generateId();
     // 将源文件复制到项目数据目录，避免原文件移动/删除后失效；杜绝 base64 内嵌
     const persistedPath = await api.material.saveAttachment(fileInfo.path, currentProjectId, attachmentId);
+    // S4: 新增附件时清除该路径的错误缓存，覆盖"用户修复/替换文件后重新添加"场景
+    clearImageErrorCache(persistedPath || fileInfo.path);
     const newAttachment: MaterialAttachment = {
       id: attachmentId,
       name: fileInfo.name,

@@ -34,45 +34,6 @@ import OutlinePolishPanel from '@/components/editor/OutlinePolishPanel';
 import SearchModal from '@/components/SearchModal';
 import InteractiveTour, { type TourStep } from '@/components/InteractiveTour';
 
-const EDITOR_TOUR_STEPS: TourStep[] = [
-  {
-    selector: '[data-tour="outline-panel"]',
-    title: '大纲面板',
-    description: '左侧是作品大纲，管理章节结构，支持拖拽排序与多级目录。点击章节即可切换编辑。',
-    placement: 'right',
-  },
-  {
-    selector: '[data-tour="editor-area"]',
-    title: '编辑区',
-    description: '这里是你的主创作区，所见即所得。输入 @ 可快速引用角色/设定，选中文字会呼出 AI 续写菜单。',
-    placement: 'bottom',
-  },
-  {
-    selector: '[data-tour="right-panel"]',
-    title: '右侧面板',
-    description: '切换 AI、角色、设定、伏笔、素材标签，所有辅助工具集中在此。',
-    placement: 'left',
-  },
-  {
-    selector: '[data-tour="ai-panel"]',
-    title: 'AI 助手',
-    description: '智能续写、扩写、润色、换视角。你始终是主导者，AI 只提供建议，由你决定是否采纳。',
-    placement: 'left',
-  },
-  {
-    selector: '[data-tour="version-history"]',
-    title: '版本历史',
-    description: '随时保存版本，支持版本间 Diff 对比，再也不怕改坏稿子。',
-    placement: 'bottom',
-  },
-  {
-    selector: '[data-tour="materials"]',
-    title: '素材库',
-    description: '收集灵感、参考资料。写作时随手取用，让创作更高效。',
-    placement: 'bottom',
-  },
-];
-
 export default function EditorPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -95,6 +56,58 @@ export default function EditorPage() {
   const [leftPanelTab, setLeftPanelTab] = useState<'outline' | 'polish'>('outline');
   const [showTour, setShowTour] = useState(false);
   const activeNav = useRef(false);
+
+  // O4: 引导步骤。prepare 回调在进入该步前自动展开/激活目标面板，
+  // 避免面板收起时 getBoundingClientRect 返回 0 宽高导致引导跳过该步。
+  // setLeft/RightPanelCollapsed、setRightPanelTab 均为 Zustand setter，引用稳定，useMemo 空依赖即可。
+  const editorTourSteps = useMemo<TourStep[]>(() => [
+    {
+      selector: '[data-tour="outline-panel"]',
+      title: '大纲面板',
+      description: '左侧是作品大纲，管理章节结构，支持拖拽排序与多级目录。点击章节即可切换编辑。',
+      placement: 'right',
+      prepare: () => setLeftPanelCollapsed(false),
+    },
+    {
+      selector: '[data-tour="editor-area"]',
+      title: '编辑区',
+      description: '这里是你的主创作区，所见即所得。输入 @ 可快速引用角色/设定，选中文字会呼出 AI 续写菜单。',
+      placement: 'bottom',
+    },
+    {
+      selector: '[data-tour="right-panel"]',
+      title: '右侧面板',
+      description: '切换 AI、角色、设定、伏笔、素材标签，所有辅助工具集中在此。',
+      placement: 'left',
+      prepare: () => setRightPanelCollapsed(false),
+    },
+    {
+      selector: '[data-tour="ai-panel"]',
+      title: 'AI 助手',
+      description: '智能续写、扩写、润色、换视角。你始终是主导者，AI 只提供建议，由你决定是否采纳。',
+      placement: 'left',
+      prepare: () => {
+        setRightPanelCollapsed(false);
+        setRightPanelTab('ai');
+      },
+    },
+    {
+      selector: '[data-tour="version-history"]',
+      title: '版本历史',
+      description: '随时保存版本，支持版本间 Diff 对比，再也不怕改坏稿子。',
+      placement: 'bottom',
+    },
+    {
+      selector: '[data-tour="materials"]',
+      title: '素材库',
+      description: '收集灵感、参考资料。写作时随手取用，让创作更高效。',
+      placement: 'bottom',
+      prepare: () => {
+        setRightPanelCollapsed(false);
+        setRightPanelTab('materials');
+      },
+    },
+  ], [setLeftPanelCollapsed, setRightPanelCollapsed, setRightPanelTab]);
 
   // 注册全局快捷键：Ctrl+S 保存快照 + Ctrl+K 打开全局搜索
   // setShowSearch 是 useState setter，引用稳定，useMemo 空依赖即可
@@ -420,7 +433,7 @@ export default function EditorPage() {
       {/* Interactive Tour (首次进入编辑器) */}
       {showTour && (
         <InteractiveTour
-          steps={EDITOR_TOUR_STEPS}
+          steps={editorTourSteps}
           onComplete={handleTourComplete}
           onSkip={handleTourSkip}
         />

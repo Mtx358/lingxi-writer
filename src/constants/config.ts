@@ -64,3 +64,12 @@ export const AI_CONTEXT_PERSPECTIVE_CHARS = 300;
 
 /** ImageFallback LRU 缓存上限（条目数）：超过后淘汰最久未访问的 dataURL */
 export const IMAGE_CACHE_MAX_ENTRIES = 64;
+
+/** 图片错误缓存有效期（毫秒）：超过后自动失效，重新尝试读取已修复/移动的文件 */
+export const IMAGE_ERROR_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** 审稿中心分析防抖延迟（毫秒）：编辑停止 N 毫秒后才触发重新分析，避免每次按键全量重算 */
+export const REVIEW_ANALYSIS_DEBOUNCE_MS = 2000;
+
+/** 审稿中心章节分析最大并发数：限制同时发起的 AI 请求数，避免打满 API 配额触发限流 */
+export const REVIEW_ANALYSIS_CONCURRENCY = 3;

@@ -1,5 +1,6 @@
 import { useEffect, useCallback } from 'react';
 import { useAppStore } from '@/store/useAppStore';
+import { isOverlayOpen } from '@/utils/overlayState';
 
 export interface HotkeyHandler {
   key: string;
@@ -15,6 +16,10 @@ export function useGlobalHotkeys(hotkeys: HotkeyHandler[]) {
     (e: KeyboardEvent) => {
       // 输入法组合状态（中文输入选字阶段）下不拦截按键，避免方向键被误捕获
       if (e.isComposing || e.keyCode === 229) return;
+      // O3: 浮层（搜索弹窗/提及面板/右键菜单等）打开时屏蔽所有全局快捷键，
+      // 避免在浮层中按 Ctrl+S/Ctrl+K 等组合键同时触发后台动作造成交互混乱。
+      // 浮层自身的 Esc/方向键由其内部 keydown 监听器独立处理。
+      if (isOverlayOpen()) return;
       const target = e.target as HTMLElement;
       const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
 

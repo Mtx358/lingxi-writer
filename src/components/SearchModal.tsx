@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Search, X, FileText, Users, Globe, Flag, Lightbulb, ArrowRight } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
+import { pushOverlay, popOverlay } from '@/utils/overlayState';
 
 interface SearchModalProps {
   onClose: () => void;
@@ -27,14 +28,22 @@ export default function SearchModal({ onClose }: SearchModalProps) {
     inputRef.current?.focus();
   }, []);
 
+  // O3: 注册浮层状态，使全局快捷键（Ctrl+S/K 等）在搜索弹窗打开期间被屏蔽，
+  // 避免按键同时触发后台动作与弹窗交互。卸载时配对 pop，防止计数器泄漏。
+  useEffect(() => {
+    pushOverlay();
+    return () => popOverlay();
+  }, []);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       // 输入法组合状态下不处理，避免中文输入选字时误触发快捷键
       if (e.isComposing || e.keyCode === 229) return;
       if (e.key === 'Escape') onClose();
     };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    // O3: 使用捕获阶段确保先于编辑器/prosemirror 处理 Esc
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
   }, [onClose]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {

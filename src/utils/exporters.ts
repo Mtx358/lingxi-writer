@@ -75,6 +75,13 @@ function getPlatformConfig(platform?: string): PlatformConfig {
 const PARA_SPLIT_MARKER = '\uE000';
 
 /**
+ * 导出分块让步间隔：每处理 N 个章节后 `await Promise.resolve()` 让出事件循环。
+ * 修复导出为同步阻塞计算导致进度条卡死的问题——JS 单线程下 setInterval 回调
+ * 无法穿插执行。分块让步后主线程可刷新 UI、推进进度条。
+ */
+const EXPORT_YIELD_EVERY_N_CHAPTERS = 3;
+
+/**
  * 把 HTML 内容转成纯文本段落数组。
  * 优先用 DOMParser 解析（浏览器/Electron 渲染进程可用），失败时降级为正则。
  */
@@ -214,7 +221,12 @@ export async function generateDocx(data: ExportData): Promise<string> {
     );
   }
 
-  chapters.forEach((ch, idx) => {
+  for (let idx = 0; idx < chapters.length; idx++) {
+    // S3: 每处理 N 个章节让出事件循环，避免进度条卡死
+    if (idx > 0 && idx % EXPORT_YIELD_EVERY_N_CHAPTERS === 0) {
+      await Promise.resolve();
+    }
+    const ch = chapters[idx];
     const title = config.includeChapterNumber ? `${idx + 1}. ${ch.title}` : ch.title;
     children.push(
       new Paragraph({
@@ -252,7 +264,7 @@ export async function generateDocx(data: ExportData): Promise<string> {
         );
       });
     }
-  });
+  }
 
   const doc = new Document({
     creator: '创作工坊',
@@ -513,7 +525,12 @@ export async function generatePdf(data: ExportData): Promise<PdfExportResult> {
     });
   }
 
-  chapters.forEach(ch => {
+  for (let chapterIdx = 0; chapterIdx < chapters.length; chapterIdx++) {
+    // S3: 每处理 N 个章节让出事件循环，避免进度条卡死
+    if (chapterIdx > 0 && chapterIdx % EXPORT_YIELD_EVERY_N_CHAPTERS === 0) {
+      await Promise.resolve();
+    }
+    const ch = chapters[chapterIdx];
     currentPage = pdfDoc.addPage();
     y = pageHeight - margin;
     drawTextOnPage(ch.title, 16, { bold: true, align: 'center', gapAfter: 10 });
@@ -524,7 +541,7 @@ export async function generatePdf(data: ExportData): Promise<PdfExportResult> {
     paragraphs.forEach(p => {
       drawTextOnPage(p, 10, { gapAfter: 6 });
     });
-  });
+  }
 
   const pdfBytes = await pdfDoc.save();
   return { base64: toBase64(pdfBytes), chineseFontLoaded };
@@ -736,7 +753,12 @@ ${navPoints}
   zip.file('OEBPS/toc.ncx', tocNcx);
 
   // 5. 各章节 XHTML
-  chapters.forEach((ch, idx) => {
+  for (let idx = 0; idx < chapters.length; idx++) {
+    // S3: 每处理 N 个章节让出事件循环，避免进度条卡死
+    if (idx > 0 && idx % EXPORT_YIELD_EVERY_N_CHAPTERS === 0) {
+      await Promise.resolve();
+    }
+    const ch = chapters[idx];
     const paragraphs = htmlToParagraphs(ch.content);
     const bodyParts: string[] = [];
     bodyParts.push(`    <h1>${escapeXml(ch.title)}</h1>`);
@@ -765,7 +787,7 @@ ${bodyParts.join('\n')}
 </html>
 `;
     zip.file(`OEBPS/chapter${idx + 1}.xhtml`, xhtml);
-  });
+  }
 
   // 6. 样式表（可选，提升阅读体验）
   const styleCss = `body { font-family: "PingFang SC", "Microsoft YaHei", serif; line-height: 1.8; margin: 5%; }

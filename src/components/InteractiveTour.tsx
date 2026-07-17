@@ -6,6 +6,14 @@ export interface TourStep {
   title: string;
   description: string;
   placement?: 'top' | 'bottom' | 'left' | 'right';
+  /**
+   * O4: 进入该步骤前调用的准备函数。
+   *
+   * 用于自动展开/激活目标元素所在的面板（如左侧大纲面板、右侧 AI/素材标签），
+   * 避免目标面板处于收起状态时 getBoundingClientRect 返回 0 宽高导致引导跳过该步。
+   * 调用后等待 CSS 过渡完成再定位浮层。
+   */
+  prepare?: () => void;
 }
 
 interface InteractiveTourProps {
@@ -114,8 +122,15 @@ export default function InteractiveTour({ steps, onComplete, onSkip }: Interacti
   }, [currentStep, steps, onComplete]);
 
   useLayoutEffect(() => {
-    resolveAndLayout();
-  }, [resolveAndLayout]);
+    const step = steps[currentStep];
+    // O4: 调用 prepare 展开/激活目标面板，确保目标元素可见。
+    // 若存在 prepare，等待 CSS 过渡（面板展开 300ms）完成后再定位，
+    // 否则 getBoundingClientRect 会拿到过渡中间态的尺寸导致浮层错位。
+    step?.prepare?.();
+    const delay = step?.prepare ? 350 : 0;
+    const timer = setTimeout(() => resolveAndLayout(), delay);
+    return () => clearTimeout(timer);
+  }, [currentStep, steps, resolveAndLayout]);
 
   useEffect(() => {
     const handler = () => resolveAndLayout();

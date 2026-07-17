@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useEditor } from '@tiptap/react';
 import { User, Globe, Search } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
+import { pushOverlay, popOverlay } from '@/utils/overlayState';
 import type { Character, SettingItem } from '@/types';
 
 interface MentionPanelProps {
@@ -15,7 +16,7 @@ export default function MentionPanel({ editor, position, onClose }: MentionPanel
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [activeTab, setActiveTab] = useState<'all' | 'characters' | 'settings'>('all');
   const inputRef = useRef<HTMLInputElement>(null);
-  
+
   const characters = useAppStore(s => s.characters);
   const settingItems = useAppStore(s => s.settingItems);
 
@@ -23,9 +24,16 @@ export default function MentionPanel({ editor, position, onClose }: MentionPanel
     inputRef.current?.focus();
   }, []);
 
+  // O3: 注册浮层状态，屏蔽编辑器与全局快捷键，避免方向键/Enter 同时移动
+  // 提及面板选中项与编辑器光标。卸载时配对 pop。
+  useEffect(() => {
+    pushOverlay();
+    return () => popOverlay();
+  }, []);
+
   const filteredItems = useMemo(() => {
     let items: Array<{ id: string; label: string; type: string; data: Character | SettingItem }> = [];
-    
+
     if (activeTab === 'all' || activeTab === 'characters') {
       items = items.concat(
         characters.map(c => ({
@@ -36,7 +44,7 @@ export default function MentionPanel({ editor, position, onClose }: MentionPanel
         }))
       );
     }
-    
+
     if (activeTab === 'all' || activeTab === 'settings') {
       items = items.concat(
         settingItems.map(s => ({
@@ -50,7 +58,7 @@ export default function MentionPanel({ editor, position, onClose }: MentionPanel
 
     if (query) {
       const lowerQuery = query.toLowerCase();
-      items = items.filter(item => 
+      items = items.filter(item =>
         item.label.toLowerCase().includes(lowerQuery)
       );
     }
@@ -65,21 +73,32 @@ export default function MentionPanel({ editor, position, onClose }: MentionPanel
       if (e.isComposing || e.keyCode === 229) return;
 
       if (e.key === 'Escape') {
+        // O3: 捕获阶段 + stopImmediatePropagation 确保编辑器不会同时收到 Esc
+        e.stopImmediatePropagation();
+        e.preventDefault();
         onClose();
       } else if (e.key === 'ArrowDown') {
         e.preventDefault();
+        e.stopImmediatePropagation();
         setSelectedIndex(prev => Math.min(prev + 1, filteredItems.length - 1));
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
+        e.stopImmediatePropagation();
         setSelectedIndex(prev => Math.max(prev - 1, 0));
       } else if (e.key === 'Enter' && filteredItems[selectedIndex]) {
         e.preventDefault();
+        e.stopImmediatePropagation();
         selectItem(filteredItems[selectedIndex]);
+      } else if (e.key === 'Tab') {
+        // O3: Tab 在浮层内仅用于切换焦点，不允许离开浮层触发编辑器
+        e.preventDefault();
+        e.stopImmediatePropagation();
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    // O3: 捕获阶段优先于 prosemirror 的 bubble 阶段监听器
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
     // selectItem 依赖 editor/onClose，不会变化，故省略
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, onClose, filteredItems, selectedIndex]);

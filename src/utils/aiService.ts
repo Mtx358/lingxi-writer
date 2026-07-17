@@ -816,6 +816,66 @@ export async function generateCharacterNames(role: string, count: number = 5): P
   return names[role] || names.supporting;
 }
 
+/**
+ * 为单个章节生成标题建议（O2：替换 OutlinePolishPanel 中硬编码的假建议）
+ *
+ * 依据章节摘要/正文片段与主题，由 LLM 给出 3 条更具吸引力的标题候选。
+ * Mock 模式下依据章节关键词生成可读标题，保证无 API 配置时仍有可用输出。
+ */
+export async function generateChapterTitleSuggestions(chapter: Chapter): Promise<string[]> {
+  const settings = llmClient.getSettings();
+  const plainText = (chapter.summary || chapter.content || '').replace(/<[^>]*>/g, '').trim();
+  const snippet = plainText.slice(0, 600);
+
+  if (settings.provider !== 'mock') {
+    try {
+      const prompt = `请为下面的小说章节生成 3 个更具吸引力的标题候选。
+
+要求：
+- 每条 4-10 字，符合中文小说章节标题习惯
+- 体现章节核心冲突或意象，避免剧透关键反转
+- 兼顾悬念感与文学性，不要过于直白
+- 用换行分隔，不要编号、不要书名号、不要引号
+
+【章节原标题】
+${chapter.title || '（无）'}
+
+【章节摘要/正文片段】
+${snippet || '（无）'}
+
+请直接输出 3 个标题候选：`;
+
+      const result = await llmClient.callLLM(prompt, '你是一位资深小说编辑，擅长打磨章节标题。直接输出标题，不要加说明。');
+      const titles = result
+        .split(/\n+/)
+        .map(s => s.replace(/^\d+[.、)]\s*/, '')
+          .replace(/^[「""『《【]/, '')
+          .replace(/[」""』》】]$/, '')
+          .trim())
+        .filter(Boolean);
+      if (titles.length > 0) return titles.slice(0, 3);
+    } catch (e) {
+      console.warn('AI generateChapterTitleSuggestions failed, falling back to mock:', e);
+    }
+  }
+
+  await llmClient.delay(600);
+
+  // Mock：依据章节文本关键词生成可读标题候选，避免硬编码与章节内容无关的固定文案
+  const fallback: string[] = [];
+  if (chapter.title) fallback.push(chapter.title);
+  const keywords = snippet.match(/[\u4e00-\u9fa5]{2,4}/g) || [];
+  const picked = Array.from(new Set(keywords)).slice(0, 2);
+  for (const kw of picked) {
+    fallback.push(`${kw}之夜`);
+    if (fallback.length >= 3) break;
+  }
+  while (fallback.length < 3) {
+    fallback.push(`第${chapter.order ?? fallback.length + 1}章·未命名`);
+  }
+  return fallback.slice(0, 3);
+}
+
 // ==================== 兼容旧调用的单例 facade ====================
 //
 // 调用方仍可通过 aiService.xxx(...) 形式访问所有能力，迁移到模块函数
@@ -838,4 +898,5 @@ export const aiService = {
   generateBrainstorm,
   generateStoryIdea,
   generateCharacterNames,
+  generateChapterTitleSuggestions,
 };

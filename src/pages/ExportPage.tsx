@@ -39,7 +39,8 @@ export default function ExportPage() {
     setExportProgress(0);
 
     // 进度推进定时器：生成期间每 300ms 推进 5-8%，封顶 90%（避免虚假 100%）
-    // 实际生成器为同步阻塞，进度仅用于反馈"仍在工作"，不代表精确比例
+    // 导出生成器已通过分块 yield（每 N 章让出事件循环）保证此定时器可正常触发，
+    // 进度条会平滑推进；此处仅为可感知反馈，不代表精确比例
     const progressTimer = setInterval(() => {
       setExportProgress(prev => {
         if (prev >= 90) return prev;

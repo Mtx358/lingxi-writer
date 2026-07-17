@@ -1,10 +1,40 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, BarChart3, AlertTriangle, TrendingUp, Heart, Zap, Clock, BookOpen, FileText } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { aiService } from '@/utils/aiService';
 import { CHAPTER_STATUS_LABELS } from '@/types';
 import type { ChapterAnalysis } from '@/types';
+import { REVIEW_ANALYSIS_DEBOUNCE_MS, REVIEW_ANALYSIS_CONCURRENCY } from '@/constants/config';
+
+// I2: 简单 FNV-1a 32 位字符串哈希，用于检测章节内容是否变更，
+// 避免对未变更章节重复发起 AI 分析（无需加密强度，只求稳定与快速）
+function hashString(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16);
+}
+
+// I2: 限制并发数的任务执行器。从队列中取任务执行，最多同时 limit 个 worker 运行，
+// 避免一次性打满 API 配额触发服务商限流或熔断。
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  const queue = [...items];
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (!item) break;
+      await worker(item);
+    }
+  });
+  await Promise.all(runners);
+}
 
 export default function ReviewPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -29,6 +59,13 @@ export default function ReviewPage() {
     pacingScore: number;
   }>>({});
 
+  // I2: 记录上次分析的章节内容哈希（chapterId -> hash），仅对变更章节重新分析
+  const chapterHashRef = useRef<Map<string, string>>(new Map());
+  // I2: 记录上次结构分析的整书哈希，仅当章节集合/内容变化时重新执行结构分析
+  const structureHashRef = useRef<string>('');
+  // I2: 缓存上次的章节分析结果，未变更章节直接复用，避免重复请求
+  const chapterAnalysesRef = useRef<Record<string, ChapterAnalysis>>({});
+
   useEffect(() => {
     if (!projectId) return;
     loadProjects();
@@ -38,24 +75,73 @@ export default function ReviewPage() {
   useEffect(() => {
     if (chapters.length === 0) return;
 
-    const runAnalysis = async () => {
-      setLoading(true);
-      try {
-        const result = await aiService.analyzeStructure(chapters);
-        setAnalysis(result);
+    // I2: 防抖 N 毫秒，避免编辑过程中每次 chapters 引用变化都触发全量分析
+    const debounceTimer = setTimeout(() => {
+      const level2 = chapters.filter(c => c.level === 2);
 
-        const chapterResults: Record<string, ChapterAnalysis> = {};
-        for (const chapter of chapters.filter(c => c.level === 2)) {
-          const analysis = await aiService.analyzeChapter(chapter);
-          chapterResults[chapter.id] = analysis;
-        }
-        setChapterAnalyses(chapterResults);
-      } finally {
-        setLoading(false);
+      // 计算各章节内容哈希与整书组合哈希
+      const currentHashes = new Map<string, string>();
+      let combinedStructureInput = '';
+      for (const ch of level2) {
+        const h = hashString(ch.content || '');
+        currentHashes.set(ch.id, h);
+        combinedStructureInput += ch.id + ':' + h + '|';
       }
-    };
+      const structureHash = hashString(combinedStructureInput);
 
-    runAnalysis();
+      // 找出内容变更的章节（首次运行时所有章节均视为变更）
+      const changedChapters = level2.filter(ch => {
+        const prev = chapterHashRef.current.get(ch.id);
+        return prev !== currentHashes.get(ch.id);
+      });
+
+      const structureChanged = structureHash !== structureHashRef.current;
+      // 无任何变更时跳过分析，避免无意义请求
+      if (changedChapters.length === 0 && !structureChanged) return;
+
+      const runAnalysis = async () => {
+        setLoading(true);
+        try {
+          // 结构分析：仅当整书哈希变化时重新执行
+          if (structureChanged) {
+            const result = await aiService.analyzeStructure(chapters);
+            setAnalysis(result);
+            structureHashRef.current = structureHash;
+          }
+
+          // 章节分析：仅对变更章节发起，并发限制为 REVIEW_ANALYSIS_CONCURRENCY
+          if (changedChapters.length > 0) {
+            const newResults: Record<string, ChapterAnalysis> = {};
+            await runWithConcurrency(changedChapters, REVIEW_ANALYSIS_CONCURRENCY, async (chapter) => {
+              try {
+                const chAnalysis = await aiService.analyzeChapter(chapter);
+                newResults[chapter.id] = chAnalysis;
+              } catch (e) {
+                console.warn(`分析章节「${chapter.title}」失败:`, e);
+              }
+            });
+            // 合并：新结果覆盖旧结果，未变更章节保留缓存
+            const merged: Record<string, ChapterAnalysis> = { ...chapterAnalysesRef.current, ...newResults };
+            // 清理已删除章节的缓存
+            const currentIds = new Set(level2.map(c => c.id));
+            for (const id of Object.keys(merged)) {
+              if (!currentIds.has(id)) delete merged[id];
+            }
+            chapterAnalysesRef.current = merged;
+            setChapterAnalyses(merged);
+            // 更新哈希缓存，标记这些章节已分析
+            for (const ch of changedChapters) {
+              chapterHashRef.current.set(ch.id, currentHashes.get(ch.id)!);
+            }
+          }
+        } finally {
+          setLoading(false);
+        }
+      };
+      runAnalysis();
+    }, REVIEW_ANALYSIS_DEBOUNCE_MS);
+
+    return () => clearTimeout(debounceTimer);
   }, [chapters]);
 
   const project = projects.find(p => p.id === projectId);

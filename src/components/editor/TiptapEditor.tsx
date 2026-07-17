@@ -7,23 +7,17 @@ import Focus from '@tiptap/extension-focus';
 import Highlight from '@tiptap/extension-highlight';
 import { TextStyle } from '@tiptap/extension-text-style';
 import Color from '@tiptap/extension-color';
-import { Bold, Italic, Underline as UnderlineIcon, Strikethrough, Heading1, Heading2, Heading3, List, ListOrdered, Quote, Minus, Link2, Undo2, Redo2, Wand2, Clock, AtSign, Flag, X, Loader2 } from 'lucide-react';
+import { Bold, Italic, Underline as UnderlineIcon, Strikethrough, Heading1, Heading2, Heading3, List, ListOrdered, Quote, Minus, Link2, Undo2, Redo2, Wand2, Clock, AtSign, X, Loader2 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { DEFAULT_FORESHADOW_STATUS, DEFAULT_FORESHADOW_PRIORITY } from '@/types';
-import { EDITOR_SWITCH_DELAY, AI_STREAM_THROTTLE_MS, EDITOR_CONTENT_UPDATE_DEBOUNCE, EDITOR_EXTERNAL_SYNC_DELAY, AI_CONTEXT_CONTINUATION_CHARS } from '@/constants/config';
+import { EDITOR_SWITCH_DELAY, EDITOR_CONTENT_UPDATE_DEBOUNCE, EDITOR_EXTERNAL_SYNC_DELAY } from '@/constants/config';
 import { useState, useEffect, useCallback, useRef } from 'react';
-import DOMPurify from 'dompurify';
-import { aiService, type StreamHandler } from '@/utils/aiService';
 import { toast } from '@/hooks/useToast';
+import { isOverlayOpen } from '@/utils/overlayState';
+import { useEditorAI, sanitizeAiHtml } from '@/hooks/useEditorAI';
 import { MentionExtension } from './extensions/MentionExtension';
 import MentionPanel from './MentionPanel';
-
-// AI 生成内容统一消毒入口：允许富文本标签但移除 script/事件处理器等危险节点
-const sanitizeAiHtml = (html: string): string =>
-  DOMPurify.sanitize(html, {
-    ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 's', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'a', 'span', 'div', 'hr'],
-    ALLOWED_ATTR: ['href', 'target', 'rel', 'class', 'style', 'color'],
-  });
+import EditorContextMenu from './EditorContextMenu';
 
 export default function TiptapEditor() {
   const currentChapterId = useAppStore(s => s.currentChapterId);
@@ -34,39 +28,27 @@ export default function TiptapEditor() {
   const setPendingEditorInsert = useAppStore(s => s.setPendingEditorInsert);
   const contentEpoch = useAppStore(s => s.contentEpoch);
   const setAIGenerating = useAppStore(s => s.setAIGenerating);
-  const [isGenerating, setIsGenerating] = useState(false);
   const [showContextMenu, setShowContextMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [showMentionPanel, setShowMentionPanel] = useState(false);
   const [mentionPosition, setMentionPosition] = useState({ x: 0, y: 0 });
-  const abortControllerRef = useRef<AbortController | null>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
-  // 防抖、章节切换同步、AI 流式缓存等辅助 ref
+  // 防抖、章节切换同步等辅助 ref（AI 流式相关 ref 已收敛到 useEditorAI hook，O1 拆分）
   const lastChapterIdRef = useRef<string | null>(null);
   const updateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const streamingBufferRef = useRef('');
-  // 续写流式节流：onChunk 攒入 buffer，由 timer 定时 flush 到编辑器，避免逐 chunk 插入导致频繁重渲染
-  const continueBufferRef = useRef('');
-  const continueFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const selectionRangeRef = useRef<{ from: number; to: number } | null>(null);
   const isSwitchingRef = useRef(false);
   const currentChapterIdRef = useRef(currentChapterId);
-  const isGeneratingRef = useRef(isGenerating);
   // 内容纪元上一次值，用于检测外部内容替换
   const lastEpochRef = useRef(0);
-  // 当前 AI 生成所绑定的章节 id，用于流式期间防串章
-  const generatingChapterIdRef = useRef<string | null>(null);
+  // 生成态 ref：在 useEditor 之前声明，供 onUpdate 闭包同步读取，避免 AI 流式期间写入 store（O1：由 useEditorAI 同步其值）
+  const isGeneratingRef = useRef(false);
 
   useEffect(() => { currentChapterIdRef.current = currentChapterId; }, [currentChapterId]);
-  useEffect(() => { isGeneratingRef.current = isGenerating; }, [isGenerating]);
 
-  // 组件卸载时清理所有异步资源：防抖定时器、流式节流定时器、进行中的 AI 请求
-  // 否则异步回调在编辑器实例已销毁后触发会操作空引用，导致白屏
+  // 组件卸载时清理防抖定时器（AI 流式资源的清理由 useEditorAI hook 自身负责）
   useEffect(() => {
     return () => {
       if (updateTimerRef.current) clearTimeout(updateTimerRef.current);
-      if (continueFlushTimerRef.current) clearTimeout(continueFlushTimerRef.current);
-      abortControllerRef.current?.abort();
     };
   }, []);
 
@@ -83,6 +65,30 @@ export default function TiptapEditor() {
       window.removeEventListener('scroll', handleScroll, true);
     };
   }, [showContextMenu]);
+
+  // O3: 浮层（提及面板/右键菜单等）打开时，拦截导航键与 Enter/Tab/Esc，
+  // 阻止其透传到 ProseMirror 的 keymap（bubble 阶段监听器）导致光标移动或换行。
+  // 使用捕获阶段确保先于 ProseMirror 处理；仅 stopPropagation（非 stopImmediatePropagation），
+  // 让浮层自身的 window 级捕获监听器仍可正常响应（window 在 editorContainer 之外）。
+  useEffect(() => {
+    const container = editorContainerRef.current;
+    if (!container) return;
+    const blockedKeys = new Set([
+      'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+      'Enter', 'Tab', 'Escape',
+      'Home', 'End', 'PageUp', 'PageDown',
+    ]);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isOverlayOpen()) return;
+      if (e.isComposing || e.keyCode === 229) return;
+      if (blockedKeys.has(e.key)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    container.addEventListener('keydown', handleKeyDown, true);
+    return () => container.removeEventListener('keydown', handleKeyDown, true);
+  }, []);
 
   const editor = useEditor({
     extensions: [
@@ -136,10 +142,31 @@ export default function TiptapEditor() {
     },
   });
 
+  // O1: AI 续写/润色逻辑由 useEditorAI hook 接管，返回生成态、ref 与中止入口
+  const {
+    isGenerating,
+    handleContinue,
+    handlePolish,
+    abortGeneration,
+  } = useEditorAI({
+    editor,
+    currentChapterId,
+    currentChapter,
+    currentChapterIdRef,
+    isGeneratingRef,
+    saveVersion,
+    setAIGenerating,
+  });
+
   // 章节切换时强制同步内容（以 chapterId 为唯一依赖，避免 content 引用不变导致不触发）
   useEffect(() => {
     if (!editor) return;
     if (currentChapterId !== lastChapterIdRef.current) {
+      // S2: 切换前优先中止进行中的 AI 请求，确保流式回调不会在新章节内容写入后
+      // 仍调用 insertContentAt 把旧章节的 AI 内容串到新章节。
+      // 中止逻辑统一收敛到 abortGeneration，清理 controller/timer/buffer 并复位生成态。
+      abortGeneration();
+
       // 切换前 flush 旧章节的防抖写入，避免上一章未保存的内容丢失
       if (updateTimerRef.current) {
         clearTimeout(updateTimerRef.current);
@@ -157,7 +184,7 @@ export default function TiptapEditor() {
       const timer = setTimeout(() => { isSwitchingRef.current = false; }, EDITOR_SWITCH_DELAY);
       return () => clearTimeout(timer);
     }
-  }, [currentChapterId, editor]);
+  }, [currentChapterId, editor, currentChapter, abortGeneration]);
 
   // 监听 contentEpoch：外部（恢复版本/恢复草稿）替换章节内容时，强制编辑器刷新
   useEffect(() => {
@@ -206,194 +233,6 @@ export default function TiptapEditor() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showMentionPanel]);
-
-  const handleContinue = useCallback(async () => {
-    if (!editor || !currentChapterId || !currentChapter || isGenerating) return;
-
-    abortControllerRef.current = new AbortController();
-    generatingChapterIdRef.current = currentChapterId;
-    setIsGenerating(true);
-    setAIGenerating(true);
-    // 生成期间禁用编辑器交互，防止用户输入与流式插入交错造成内容混乱
-    editor.setEditable(false);
-
-    try {
-      const characters = useAppStore.getState().characters;
-      const aiSettings = useAppStore.getState().aiSettings;
-
-      aiService.updateSettings(aiSettings);
-
-      const handler: StreamHandler = {
-        onChunk: (chunk: string) => {
-          if (!editor) return;
-          // 防串章：若生成期间章节已被切换则中止
-          if (generatingChapterIdRef.current !== currentChapterIdRef.current) {
-            abortControllerRef.current?.abort();
-            return;
-          }
-          // 节流：chunk 先攒入 buffer，由定时器按 AI_STREAM_THROTTLE_MS 间隔 flush，
-          // 避免逐 chunk 插入触发频繁重渲染与字数统计；最后一个 chunk 由 onComplete 兜底 flush
-          continueBufferRef.current += chunk;
-          if (continueFlushTimerRef.current) return;
-          continueFlushTimerRef.current = setTimeout(() => {
-            continueFlushTimerRef.current = null;
-            if (!editor || !continueBufferRef.current) return;
-            const endPos = Math.max(0, editor.state.doc.content.size - 1);
-            editor.chain().insertContentAt(endPos, sanitizeAiHtml(continueBufferRef.current)).run();
-            continueBufferRef.current = '';
-            const dom = editor.view.dom;
-            dom.scrollTop = dom.scrollHeight;
-          }, AI_STREAM_THROTTLE_MS);
-        },
-        onComplete: () => {
-          if (!editor) return;
-          // 兜底 flush：清掉待执行的 timer 并立即写入残留 buffer
-          if (continueFlushTimerRef.current) {
-            clearTimeout(continueFlushTimerRef.current);
-            continueFlushTimerRef.current = null;
-          }
-          if (continueBufferRef.current) {
-            const endPos = Math.max(0, editor.state.doc.content.size - 1);
-            editor.chain().insertContentAt(endPos, sanitizeAiHtml(continueBufferRef.current)).run();
-            continueBufferRef.current = '';
-            const dom = editor.view.dom;
-            dom.scrollTop = dom.scrollHeight;
-          }
-          editor.setEditable(true);
-          editor.commands.focus();
-          // 生成期间 onUpdate 被屏蔽，此处显式 flush 编辑器内容到 store，避免版本保存读到陈旧内容
-          const cid = generatingChapterIdRef.current;
-          if (cid) {
-            useAppStore.getState().updateChapterContent(cid, editor.getHTML());
-          }
-        },
-        onError: (error: Error) => {
-          console.error('AI stream error:', error);
-          toast.error('AI 续写失败', error.message || '请检查网络或 API 配置');
-          // 清理节流 timer 与残留 buffer，避免脏数据后续写入
-          if (continueFlushTimerRef.current) {
-            clearTimeout(continueFlushTimerRef.current);
-            continueFlushTimerRef.current = null;
-          }
-          continueBufferRef.current = '';
-          // 出错时也需把已流式插入的部分保留到 store
-          const cid = generatingChapterIdRef.current;
-          if (cid && editor) {
-            useAppStore.getState().updateChapterContent(cid, editor.getHTML());
-          }
-        },
-      };
-
-      await aiService.generateContinuationStream(
-        currentChapter.content.slice(-AI_CONTEXT_CONTINUATION_CHARS),
-        currentChapter.summary,
-        characters,
-        aiSettings.style,
-        handler,
-        abortControllerRef.current.signal
-      );
-
-      saveVersion(currentChapterId, 'AI 续写');
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error('AI continue error:', e);
-      toast.error('AI 续写失败', msg);
-    } finally {
-      editor.setEditable(true);
-      setIsGenerating(false);
-      setAIGenerating(false);
-      abortControllerRef.current = null;
-      generatingChapterIdRef.current = null;
-    }
-  }, [editor, currentChapterId, currentChapter, saveVersion, isGenerating, setAIGenerating]);
-
-  const handlePolish = useCallback(async () => {
-    if (!editor || !currentChapterId || isGenerating) return;
-
-    abortControllerRef.current = new AbortController();
-    generatingChapterIdRef.current = currentChapterId;
-    setIsGenerating(true);
-    setAIGenerating(true);
-    editor.setEditable(false);
-
-    try {
-      const { state } = editor;
-      const { selection } = state;
-      const isTextSelected = !selection.empty;
-
-      let selectedText = '';
-      if (isTextSelected) {
-        const { from, to } = selection;
-        selectedText = state.doc.textBetween(from, to);
-      }
-
-      const aiSettings = useAppStore.getState().aiSettings;
-      aiService.updateSettings(aiSettings);
-
-      // 缓存选区范围，避免流过程中光标移动导致错位
-      if (isTextSelected) {
-        const { from, to } = editor.state.selection;
-        selectionRangeRef.current = { from, to };
-      }
-
-      const handler: StreamHandler = {
-        onChunk: (chunk: string) => {
-          if (!editor) return;
-          if (generatingChapterIdRef.current !== currentChapterIdRef.current) {
-            abortControllerRef.current?.abort();
-            return;
-          }
-          // 流式阶段仅缓存内容，不操作编辑器，避免选区错位和频繁重绘
-          streamingBufferRef.current += chunk;
-        },
-        onComplete: () => {
-          if (!editor) return;
-          if (isTextSelected && selectionRangeRef.current) {
-            // 流结束后一次性原子替换选中文本
-            const { from, to } = selectionRangeRef.current;
-            editor.chain().focus().deleteRange({ from, to }).insertContent(sanitizeAiHtml(streamingBufferRef.current)).run();
-            selectionRangeRef.current = null;
-          } else {
-            // 全章润色：流结束后一次性替换
-            editor.commands.setContent(sanitizeAiHtml(streamingBufferRef.current));
-            editor.commands.focus();
-          }
-          streamingBufferRef.current = '';
-          editor.setEditable(true);
-          // flush 到 store
-          const cid = generatingChapterIdRef.current;
-          if (cid) {
-            useAppStore.getState().updateChapterContent(cid, editor.getHTML());
-          }
-        },
-        onError: (error: Error) => {
-          console.error('AI stream error:', error);
-          toast.error('AI 润色失败', error.message || '请检查网络或 API 配置');
-          streamingBufferRef.current = '';
-          selectionRangeRef.current = null;
-        },
-      };
-
-      await aiService.polishTextStream(
-        selectedText || currentChapter?.content || '',
-        aiSettings.style,
-        handler,
-        abortControllerRef.current.signal
-      );
-
-      saveVersion(currentChapterId, 'AI 润色');
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error('AI polish error:', e);
-      toast.error('AI 润色失败', msg);
-    } finally {
-      editor.setEditable(true);
-      setIsGenerating(false);
-      setAIGenerating(false);
-      abortControllerRef.current = null;
-      generatingChapterIdRef.current = null;
-    }
-  }, [editor, currentChapterId, currentChapter, saveVersion, isGenerating, setAIGenerating]);
 
   const closeContextMenu = useCallback(() => {
     setShowContextMenu(false);
@@ -583,10 +422,7 @@ export default function TiptapEditor() {
               <span className="text-sm">AI 生成中...</span>
             </div>
             <button
-              onClick={() => {
-                abortControllerRef.current?.abort();
-                setIsGenerating(false);
-              }}
+              onClick={abortGeneration}
               className="flex items-center gap-2 px-3 py-1.5 rounded bg-red-600/20 text-red-400 hover:bg-red-600/30 transition-colors"
               title="取消生成"
             >
@@ -634,86 +470,15 @@ export default function TiptapEditor() {
         />
       )}
 
-      {/* 右键上下文菜单：使用 fixed 定位 + 视口坐标，避免滚动和嵌套偏移 */}
+      {/* O1: 右键上下文菜单拆分为独立组件，使用 fixed 定位 + 视口坐标 */}
       {showContextMenu && (
-        <>
-          {/* 透明遮罩，用于点击外部关闭 */}
-          <div
-            className="fixed inset-0 z-40"
-            onClick={closeContextMenu}
-          />
-          <div
-            className="fixed z-50 w-48 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1"
-            style={{
-              left: Math.min(menuPosition.x, window.innerWidth - 200),
-              top: Math.min(menuPosition.y, window.innerHeight - 320),
-            }}
-          >
-            <button
-              onClick={() => {
-                editor.chain().focus().undo().run();
-                closeContextMenu();
-              }}
-              className="w-full text-left px-4 py-2 text-gray-300 hover:bg-gray-700/50 transition-colors disabled:opacity-30"
-              disabled={!editor.can().undo()}
-            >
-              撤销
-            </button>
-            <button
-              onClick={() => {
-                editor.chain().focus().redo().run();
-                closeContextMenu();
-              }}
-              className="w-full text-left px-4 py-2 text-gray-300 hover:bg-gray-700/50 transition-colors disabled:opacity-30"
-              disabled={!editor.can().redo()}
-            >
-              重做
-            </button>
-            <div className="border-t border-gray-700 my-1" />
-            <button
-              onClick={() => {
-                editor.chain().focus().toggleBold().run();
-                closeContextMenu();
-              }}
-              className="w-full text-left px-4 py-2 text-gray-300 hover:bg-gray-700/50 transition-colors"
-            >
-              加粗
-            </button>
-            <button
-              onClick={() => {
-                editor.chain().focus().toggleItalic().run();
-                closeContextMenu();
-              }}
-              className="w-full text-left px-4 py-2 text-gray-300 hover:bg-gray-700/50 transition-colors"
-            >
-              斜体
-            </button>
-            <button
-              onClick={() => {
-                editor.chain().focus().toggleHighlight().run();
-                closeContextMenu();
-              }}
-              className="w-full text-left px-4 py-2 text-gray-300 hover:bg-gray-700/50 transition-colors"
-            >
-              高亮
-            </button>
-            <div className="border-t border-gray-700 my-1" />
-            <button
-              onClick={handleMarkAsForeshadow}
-              className="w-full text-left px-4 py-2 text-gray-300 hover:bg-gray-700/50 transition-colors flex items-center gap-2"
-            >
-              <Flag className="w-3 h-3" />
-              标记为伏笔
-            </button>
-            <button
-              onClick={handleInsertMention}
-              className="w-full text-left px-4 py-2 text-gray-300 hover:bg-gray-700/50 transition-colors flex items-center gap-2"
-            >
-              <AtSign className="w-3 h-3" />
-              插入@提及
-            </button>
-          </div>
-        </>
+        <EditorContextMenu
+          editor={editor}
+          position={menuPosition}
+          onClose={closeContextMenu}
+          onMarkAsForeshadow={handleMarkAsForeshadow}
+          onInsertMention={handleInsertMention}
+        />
       )}
     </div>
   );
