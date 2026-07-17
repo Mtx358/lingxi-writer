@@ -763,6 +763,10 @@ function registerAIProxyHandlers() {
     const abortController = new AbortController();
     aiAbortControllers.set(requestId, abortController);
 
+    // 窗口关闭时中止 fetch，避免 event.sender.send 抛错且 fetch 句柄悬挂
+    const onSenderDestroyed = () => abortController.abort();
+    event.sender.once('destroyed', onSenderDestroyed);
+
     try {
       const res = await fetch(url, {
         method: 'POST',
@@ -805,7 +809,9 @@ function registerAIProxyHandlers() {
           const chunk = extractChunk(trimmed.slice(6));
           if (chunk) {
             fullContent += chunk;
-            event.sender.send(`ai:stream:chunk:${requestId}`, chunk);
+            if (!event.sender.isDestroyed()) {
+              event.sender.send(`ai:stream:chunk:${requestId}`, chunk);
+            }
           }
         }
       }
@@ -815,23 +821,32 @@ function registerAIProxyHandlers() {
         const chunk = extractChunk(tail.slice(6));
         if (chunk) {
           fullContent += chunk;
-          event.sender.send(`ai:stream:chunk:${requestId}`, chunk);
+          if (!event.sender.isDestroyed()) {
+            event.sender.send(`ai:stream:chunk:${requestId}`, chunk);
+          }
         }
       }
 
-      event.sender.send(`ai:stream:done:${requestId}`, fullContent);
+      if (!event.sender.isDestroyed()) {
+        event.sender.send(`ai:stream:done:${requestId}`, fullContent);
+      }
       return fullContent;
     } catch (e) {
       const isAbort = e instanceof Error && (e.name === 'AbortError' || abortController.signal.aborted);
       if (isAbort) {
         // abort 视为正常完成，保留已生成内容
-        event.sender.send(`ai:stream:done:${requestId}`, '');
+        if (!event.sender.isDestroyed()) {
+          event.sender.send(`ai:stream:done:${requestId}`, '');
+        }
         return '';
       }
       const msg = e instanceof Error ? e.message : String(e);
-      event.sender.send(`ai:stream:error:${requestId}`, msg);
+      if (!event.sender.isDestroyed()) {
+        event.sender.send(`ai:stream:error:${requestId}`, msg);
+      }
       throw e;
     } finally {
+      event.sender.off('destroyed', onSenderDestroyed);
       aiAbortControllers.delete(requestId);
     }
   });

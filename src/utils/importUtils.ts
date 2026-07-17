@@ -1,5 +1,9 @@
 import DOMPurify from 'dompurify';
 
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 export interface ImportedChapter {
   title: string;
   content: string;
@@ -67,9 +71,9 @@ export async function parseDocx(arrayBuffer: ArrayBuffer, mapping?: HeadingMappi
         const text = node.textContent?.trim();
         if (text && currentChapter) {
           if (currentContent.length === 0 || currentContent[currentContent.length - 1].endsWith('</p>')) {
-            currentContent.push(`<p>${text}`);
+            currentContent.push(`<p>${escapeHtml(text)}`);
           } else {
-            currentContent[currentContent.length - 1] += text;
+            currentContent[currentContent.length - 1] += escapeHtml(text);
           }
         }
         return;
@@ -90,7 +94,7 @@ export async function parseDocx(arrayBuffer: ArrayBuffer, mapping?: HeadingMappi
           } else if (m.h1 === 'chapter') {
             startChapter(headingText, 2);
           } else if (currentChapter) {
-            currentContent.push(`<h3>${headingText}</h3>`);
+            currentContent.push(`<h3>${escapeHtml(headingText)}</h3>`);
           }
           break;
         }
@@ -102,7 +106,7 @@ export async function parseDocx(arrayBuffer: ArrayBuffer, mapping?: HeadingMappi
           } else if (m.h2 === 'chapter') {
             startChapter(headingText, 2);
           } else if (currentChapter) {
-            currentContent.push(`<h3>${headingText}</h3>`);
+            currentContent.push(`<h3>${escapeHtml(headingText)}</h3>`);
           }
           break;
         }
@@ -112,14 +116,14 @@ export async function parseDocx(arrayBuffer: ArrayBuffer, mapping?: HeadingMappi
           if (m.h3 === 'chapter') {
             startChapter(headingText, 2);
           } else if (currentChapter) {
-            currentContent.push(`<h3>${headingText}</h3>`);
+            currentContent.push(`<h3>${escapeHtml(headingText)}</h3>`);
           }
           break;
         }
         case 'p': {
           const text = element.textContent?.trim();
           if (text && currentChapter) {
-            currentContent.push(`<p>${text}</p>`);
+            currentContent.push(`<p>${escapeHtml(text)}</p>`);
           }
           break;
         }
@@ -139,7 +143,7 @@ export async function parseDocx(arrayBuffer: ArrayBuffer, mapping?: HeadingMappi
           element.querySelectorAll('li').forEach(li => {
             const liText = li.textContent?.trim() || '';
             if (liText) {
-              listHtml += `<li>${liText}</li>`;
+              listHtml += `<li>${escapeHtml(liText)}</li>`;
             }
           });
           listHtml += `</${tag}>`;
@@ -162,7 +166,7 @@ export async function parseDocx(arrayBuffer: ArrayBuffer, mapping?: HeadingMappi
       if (text) {
         chapters.push({
           title: '第一章',
-          content: DOMPurify.sanitize(`<p>${text.split('\n').filter(l => l.trim()).join('</p><p>')}</p>`),
+          content: DOMPurify.sanitize(`<p>${text.split('\n').filter(l => l.trim()).map(l => escapeHtml(l)).join('</p><p>')}</p>`),
           level: 2,
           order: 0,
         });
@@ -218,7 +222,7 @@ export function parseMarkdown(markdown: string, mapping?: HeadingMapping): Impor
 
   const pushInlineHeading = (headingText: string) => {
     if (currentChapter) {
-      currentContent.push(`<h3>${headingText}</h3>`);
+      currentContent.push(`<h3>${escapeHtml(headingText)}</h3>`);
     }
   };
 
@@ -276,9 +280,9 @@ export function parseMarkdown(markdown: string, mapping?: HeadingMapping): Impor
         }
       } else {
         if (lastIsBoundary()) {
-          currentContent.push(`<p>${line.trim()}`);
+          currentContent.push(`<p>${escapeHtml(line.trim())}`);
         } else {
-          currentContent[currentContent.length - 1] += `\n${line.trim()}`;
+          currentContent[currentContent.length - 1] += `\n${escapeHtml(line.trim())}`;
         }
       }
     }
@@ -358,7 +362,7 @@ export function parsePlainText(text: string): ImportResult {
     if (currentTitle && currentContent.length > 0) {
       const contentHtml = currentContent
         .filter(l => l.trim())
-        .map(l => `<p>${l.trim()}</p>`)
+        .map(l => `<p>${escapeHtml(l.trim())}</p>`)
         .join('\n');
       chapters.push({
         title: currentTitle,
@@ -384,7 +388,7 @@ export function parsePlainText(text: string): ImportResult {
   if (chapters.length === 0 && text.trim()) {
     chapters.push({
       title: '第一章',
-      content: text.split('\n').filter(l => l.trim()).map(l => `<p>${l.trim()}</p>`).join('\n'),
+      content: text.split('\n').filter(l => l.trim()).map(l => `<p>${escapeHtml(l.trim())}</p>`).join('\n'),
       level: 2,
       order: 0,
     });

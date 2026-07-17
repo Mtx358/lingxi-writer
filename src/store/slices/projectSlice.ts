@@ -13,6 +13,7 @@ import { storage, generateId, markDirty, triggerSave, clearAutoSaveTimer } from 
 import { createDefaultProject, createSampleProject } from '@/constants/mockData';
 import { encodeVersionsToDeltas, decodeDeltasToVersions } from '@/utils/versionDelta';
 import { toast } from '@/hooks/useToast';
+import { disposeSearchWorker } from './uiSlice';
 
 type ProjectSlice = Pick<AppState,
   | 'projects' | 'currentProjectId' | 'currentProjectFilePath' | 'lastSavedAt' | 'isSaving'
@@ -64,8 +65,14 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       materials: [],
       versions: {},
       conflicts: [],
+      aiSuggestions: [],
       currentChapterId: null,
       lastSavedAt: null,
+      // 重置 AI 生成状态、搜索与章节分析，防止上一个项目的残留状态污染新项目
+      isAIGenerating: false,
+      searchQuery: '',
+      searchResults: [],
+      analysis: {},
     });
     markDirty();
     return project;
@@ -91,8 +98,14 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     }
     const project = projects.find(p => p.id === projectId);
 
+    // totalWords 在 set 前计算并合并到 projects，避免第二次 set 产生中间订阅状态
+    const totalWords = chapters.reduce((sum, c) => sum + c.wordCount, 0);
+    const projectsWithWords = project
+      ? projects.map(p => p.id === projectId ? { ...p, totalWords } : p)
+      : projects;
+
     set({
-      projects,
+      projects: projectsWithWords,
       currentProjectId: projectId,
       currentProjectFilePath: null,
       chapters,
@@ -106,12 +119,15 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       aiSuggestions: [],
       currentChapterId: chapters.length > 0 ? chapters[0].id : null,
       lastSavedAt: project?.updatedAt || null,
+      // 重置 AI 生成状态、搜索与章节分析，防止上一个项目的残留状态污染当前项目
+      isAIGenerating: false,
+      searchQuery: '',
+      searchResults: [],
+      analysis: {},
     });
 
-    if (project) {
-      const totalWords = chapters.reduce((sum, c) => sum + c.wordCount, 0);
-      set({ projects: get().projects.map(p => p.id === projectId ? { ...p, totalWords } : p) });
-    }
+    // 打开项目后章节正文已就绪，重算伏笔的 chaptersSinceMention
+    get().recomputeForeshadowMentions();
   },
 
   openProjectFile: async (filePath: string) => {
@@ -141,12 +157,21 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       aiSuggestions: [],
       currentChapterId: chapters.length > 0 ? chapters[0].id : null,
       lastSavedAt: project.updatedAt,
+      // 重置 AI 生成状态、搜索与章节分析，防止上一个项目的残留状态污染当前项目
+      isAIGenerating: false,
+      searchQuery: '',
+      searchResults: [],
+      analysis: {},
     });
+
+    // 打开项目文件后章节正文已就绪，重算伏笔的 chaptersSinceMention
+    get().recomputeForeshadowMentions();
 
     return true;
   },
 
   saveProject: async () => {
+    if (get().isSaving) return false;
     const { currentProjectId, currentProjectFilePath, projects, chapters, characters, settingCategories, settingItems, foreshadows, materials, versions } = get();
 
     if (!currentProjectId) return false;
@@ -196,7 +221,11 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         }
         await storage.set(`project_${currentProjectId}_versions`, encodedVersions);
         await storage.set('projects', get().projects.map(p => p.id === currentProjectId ? updatedProject : p));
-        set({ lastSavedAt: now });
+        // 与 Electron 分支一致：同步更新内存中的 projects，避免 lastSavedAt 已更新但 projects 仍为旧值
+        set({
+          projects: get().projects.map(p => p.id === currentProjectId ? updatedProject : p),
+          lastSavedAt: now,
+        });
         return true;
       }
     } catch (e) {
@@ -222,8 +251,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
     if (filePath) {
       set({ currentProjectFilePath: filePath });
-      await get().saveProject();
-      return filePath;
+      const ok = await get().saveProject();
+      return ok ? filePath : null;
     }
     return null;
   },
@@ -231,6 +260,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   closeProject: () => {
     triggerSave();
     clearAutoSaveTimer();
+    // 关闭项目时终止搜索 Worker，释放子线程资源并防止监听器泄漏
+    disposeSearchWorker();
     set({
       currentProjectId: null,
       currentProjectFilePath: null,
@@ -241,24 +272,37 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       foreshadows: [],
       materials: [],
       versions: {},
+      histories: {},
       conflicts: [],
       aiSuggestions: [],
       currentChapterId: null,
       lastSavedAt: null,
+      // 重置 AI 生成状态、搜索与章节分析，防止上一个项目的残留状态污染无项目状态
+      isAIGenerating: false,
+      searchQuery: '',
+      searchResults: [],
+      analysis: {},
     });
   },
 
-  deleteProject: (projectId: string) => {
+  deleteProject: async (projectId: string) => {
     const projects = get().projects.filter(p => p.id !== projectId);
-    void storage.set('projects', projects);
-    void storage.remove(`project_${projectId}_chapters`);
-    void storage.remove(`project_${projectId}_characters`);
-    void storage.remove(`project_${projectId}_settingCategories`);
-    void storage.remove(`project_${projectId}_settingItems`);
-    void storage.remove(`project_${projectId}_foreshadows`);
-    void storage.remove(`project_${projectId}_materials`);
-    void storage.remove(`project_${projectId}_versions`);
     set({ projects });
+    const results = await Promise.allSettled([
+      storage.set('projects', projects),
+      storage.remove(`project_${projectId}_chapters`),
+      storage.remove(`project_${projectId}_characters`),
+      storage.remove(`project_${projectId}_settingCategories`),
+      storage.remove(`project_${projectId}_settingItems`),
+      storage.remove(`project_${projectId}_foreshadows`),
+      storage.remove(`project_${projectId}_materials`),
+      storage.remove(`project_${projectId}_versions`),
+    ]);
+    for (const r of results) {
+      if (r.status === 'rejected') {
+        console.warn('deleteProject: storage operation failed', r.reason);
+      }
+    }
   },
 
   updateProject: (projectId: string, updates: Partial<Project>) => {
@@ -291,6 +335,11 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       aiSuggestions: [],
       currentChapterId: firstChapter?.id || null,
       lastSavedAt: null,
+      // 重置 AI 生成状态、搜索与章节分析，防止上一个项目的残留状态污染示例项目
+      isAIGenerating: false,
+      searchQuery: '',
+      searchResults: [],
+      analysis: {},
     });
     markDirty();
   },

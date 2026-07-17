@@ -196,6 +196,11 @@ export function useEditorAI({
         abortControllerRef.current.signal
       );
 
+      if (abortControllerRef.current?.signal.aborted) {
+        // 用户取消，不保存版本
+        return;
+      }
+
       saveVersion(currentChapterId, 'AI 续写');
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -287,6 +292,11 @@ export function useEditorAI({
         handler,
         abortControllerRef.current.signal
       );
+
+      if (abortControllerRef.current?.signal.aborted) {
+        // 用户取消，不保存版本
+        return;
+      }
 
       saveVersion(currentChapterId, 'AI 润色');
     } catch (e) {

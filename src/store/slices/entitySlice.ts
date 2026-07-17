@@ -24,6 +24,11 @@ type EntitySlice = Pick<AppState,
 // F 个伏笔 × C 个章节时，去 HTML 至多执行 C 次（仅在章节内容变更时增量更新），而非 F*C 次。
 const chapterPlainTextCache = new Map<string, { html: string; plain: string }>();
 
+// 清空章节纯文本缓存：项目切换/关闭时调用，避免上一项目的章节缓存残留导致伏笔重算基于过期文本
+export const clearChapterPlainTextCache = (): void => {
+  chapterPlainTextCache.clear();
+};
+
 const getChapterPlainText = (chapterId: string, html: string): string => {
   const cached = chapterPlainTextCache.get(chapterId);
   if (cached && cached.html === html) {

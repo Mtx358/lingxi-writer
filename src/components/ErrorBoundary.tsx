@@ -6,6 +6,8 @@ interface ErrorBoundaryProps {
   fallback?: (error: Error, reset: () => void) => ReactNode;
   /** 错误时的回调，可用于上报 */
   onError?: (error: Error, errorInfo: ErrorInfo) => void;
+  /** 当该值变化时重置错误状态（如路由/页面 key 变化） */
+  resetKey?: string | number;
 }
 
 interface ErrorBoundaryState {
@@ -28,6 +30,12 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('ErrorBoundary caught:', error, errorInfo);
     this.props.onError?.(error, errorInfo);
+  }
+
+  componentDidUpdate(prevProps: ErrorBoundaryProps) {
+    if (this.state.hasError && prevProps.resetKey !== this.props.resetKey) {
+      this.reset();
+    }
   }
 
   reset = () => {

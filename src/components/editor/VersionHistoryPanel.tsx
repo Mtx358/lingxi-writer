@@ -33,7 +33,12 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
   const [diffContentHash, setDiffContentHash] = useState<string>('');
 
   const currentChapter = chapters.find(c => c.id === currentChapterId);
-  const chapterVersions = currentChapterId ? (versions[currentChapterId] || []) : [];
+  // 仅订阅 versions 对象 + currentChapterId，用 useMemo 派生当前章节的版本数组，
+  // 避免每次渲染都生成新数组引用导致 sortedVersions/useEffect 重算
+  const chapterVersions = useMemo(
+    () => currentChapterId ? (versions[currentChapterId] || []) : [],
+    [versions, currentChapterId]
+  );
   const sortedVersions = useMemo(() => [...chapterVersions].sort((a, b) =>
     new Date(b.snapshotTime).getTime() - new Date(a.snapshotTime).getTime()
   ), [chapterVersions]);

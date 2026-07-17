@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import DOMPurify from 'dompurify';
 
 interface SafeHtmlProps {
@@ -15,23 +16,42 @@ const ALLOWED_TAGS = [
 
 const ALLOWED_ATTR = ['href', 'class', 'target', 'rel', 'data-reference-type', 'data-reference-id'];
 
-export function SafeHtml({ html, className, tag = 'div' }: SafeHtmlProps) {
-  const sanitized = DOMPurify.sanitize(html, {
-    ALLOWED_TAGS,
-    ALLOWED_ATTR,
-    ADD_ATTR: ['target'],
-    FORCE_BODY: true,
+const ALLOWED_URI_REGEXP = /^(?:(?:https?|mailto|tel):|[^:]*)$/i;
+
+let hookRegistered = false;
+function ensureHook() {
+  if (hookRegistered) return;
+  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+    if (node.tagName === 'A' && node.getAttribute('target') === '_blank') {
+      node.setAttribute('rel', 'noopener noreferrer');
+    }
   });
+  hookRegistered = true;
+}
+
+export function SafeHtml({ html, className, tag = 'div' }: SafeHtmlProps) {
+  const sanitized = useMemo(() => {
+    ensureHook();
+    return DOMPurify.sanitize(html, {
+      ALLOWED_TAGS,
+      ALLOWED_ATTR,
+      ADD_ATTR: ['target'],
+      ALLOWED_URI_REGEXP,
+      FORCE_BODY: true,
+    });
+  }, [html]);
 
   const Tag = tag;
   return <Tag className={className} dangerouslySetInnerHTML={{ __html: sanitized }} />;
 }
 
 export function sanitizeHtml(html: string): string {
+  ensureHook();
   return DOMPurify.sanitize(html, {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
     ADD_ATTR: ['target'],
+    ALLOWED_URI_REGEXP,
     FORCE_BODY: true,
   });
 }

@@ -1,5 +1,5 @@
 import DOMPurify from 'dompurify';
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Sparkles, Send, SlidersHorizontal, X, Check, RefreshCw, ChevronDown, UserRound, Wifi, Loader2 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { useClickOutside } from '@/hooks/useClickOutside';
@@ -31,7 +31,10 @@ export default function AIPanel() {
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const currentChapterId = useAppStore(s => s.currentChapterId);
-  const currentChapter = useAppStore(s => s.chapters.find(c => c.id === s.currentChapterId));
+  const chapters = useAppStore(s => s.chapters);
+  // 派生 currentChapter 用 useMemo 收敛：避免在 selector 内执行 find 派生对象，
+  // 减少 store 每次更新时 selector 的执行开销与潜在的不必要重渲染
+  const currentChapter = useMemo(() => chapters.find(c => c.id === currentChapterId), [chapters, currentChapterId]);
   const aiSuggestions = useAppStore(s => s.aiSuggestions);
   const characters = useAppStore(s => s.characters);
   const clearAISuggestions = useAppStore(s => s.clearAISuggestions);

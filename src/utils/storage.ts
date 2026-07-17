@@ -1,6 +1,7 @@
 import type { Project, Chapter, Character, SettingCategory, SettingItem, Foreshadow, Material, ChapterVersion } from '@/types';
 import { AUTOSAVE_INTERVAL } from '@/constants/config';
 import { toast } from '@/hooks/useToast';
+import { decodeDeltasToVersions } from '@/utils/versionDelta';
 
 // 判断是否为 localStorage 配额超限错误（不同浏览器抛出 DOMException 或 QuotaExceededError）
 const isQuotaError = (e: unknown): boolean => {
@@ -447,6 +448,11 @@ export const migrateLocalStorageToProjectFile = async (): Promise<string | null>
   const foreshadows = await storage.get<Foreshadow[]>(`project_${project.id}_foreshadows`, []);
   const materials = await storage.get<Material[]>(`project_${project.id}_materials`, []);
   const versions = await storage.get<Record<string, ChapterVersion[]>>(`project_${project.id}_versions`, {});
+  // localStorage 中的版本以增量 Diff 形式持久化，写入 .cwp 前需解码为完整 ChapterVersion[]
+  const decodedVersions: Record<string, ChapterVersion[]> = {};
+  for (const [cid, vlist] of Object.entries(versions)) {
+    decodedVersions[cid] = decodeDeltasToVersions(vlist as unknown as Parameters<typeof decodeDeltasToVersions>[0]);
+  }
 
   const defaultName = `${project.title.replace(/[\\/:*?"<>|]/g, '_')}.cwp`;
   const filePath = await storage.saveFileDialog(defaultName);
@@ -461,7 +467,7 @@ export const migrateLocalStorageToProjectFile = async (): Promise<string | null>
       settingItems,
       foreshadows,
       materials,
-      versions
+      decodedVersions
     );
     if (success) {
       await storage.remove(`project_${project.id}_chapters`);
@@ -502,10 +508,15 @@ export const markDirty = () => {
   }, AUTOSAVE_INTERVAL);
 };
 
-export const triggerSave = () => {
+export const triggerSave = async (): Promise<void> => {
   if (saveCallback) {
-    void saveCallback();
-    isDirty = false;
+    try {
+      await saveCallback();
+      isDirty = false;
+    } catch (e) {
+      console.error('triggerSave failed, keeping dirty state:', e);
+      // isDirty 保持 true
+    }
     if (autoSaveTimer) {
       clearTimeout(autoSaveTimer);
       autoSaveTimer = null;

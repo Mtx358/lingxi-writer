@@ -35,10 +35,10 @@ export const useAppStore = create<AppState>()((...a) => {
     ...createUISlice(...a),
   };
 
-  // 初始化自动保存回调：定时触发时保存当前文件项目
+  // 初始化自动保存回调：定时触发时保存当前项目（localStorage 项目无 filePath，按 currentProjectId 触发）
   const get = a[1];
   setAutoSaveCallback(async () => {
-    if (get().currentProjectFilePath && !get().isSaving) {
+    if (get().currentProjectId && !get().isSaving) {
       await get().saveProject();
     }
   });

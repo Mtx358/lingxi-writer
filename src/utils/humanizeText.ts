@@ -1,3 +1,16 @@
+function htmlToText(html: string): string {
+  if (typeof document !== 'undefined') {
+    const ta = document.createElement('textarea');
+    ta.innerHTML = html;
+    return ta.value;
+  }
+  return html.replace(/<[^>]*>/g, '');
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 export interface HumanizeOptions {
   intensity: number;
   style: 'novel' | 'article' | 'casual' | 'poetic';
@@ -213,7 +226,7 @@ function addEllipsis(sentence: string): string {
   
   const lastChar = sentence.slice(-1);
   if (lastChar === '。') {
-    return sentence.slice(0, -1) + '...';
+    return sentence.slice(0, -1) + '…';
   }
   
   return sentence;
@@ -430,15 +443,17 @@ export function optimizeDialogue(text: string): string {
 }
 
 export function fullHumanize(html: string, options: Partial<HumanizeOptions> = {}): string {
-  let result = html;
-  
+  const plainText = htmlToText(html);
+  let result = plainText;
+
   result = humanizeText(result, options);
   result = polishRhythm(result, options.intensity || 50);
   result = optimizeDialogue(result);
-  
+
   if ((options.intensity || 50) > 60) {
     result = addSubtleImperfections(result, (options.intensity || 50) - 50);
   }
-  
-  return result;
+
+  const processedParagraphs = splitIntoParagraphs(result);
+  return processedParagraphs.map(p => `<p>${escapeHtml(p)}</p>`).join('');
 }

@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import type { Project, Chapter, Character, SettingCategory, SettingItem, Foreshadow, Material, ChapterVersion } from '@/types';
 import { levelToLevelType, DEFAULT_CHAPTER_STATUS } from '@/types';
 import { encodeVersionsToDeltas, decodeDeltasToVersions } from '@/utils/versionDelta';
+import { generateId } from '@/utils/storage';
 
 export interface ProjectFileContent {
   project: Project;
@@ -42,6 +43,8 @@ const isCompatibleVersion = (fileVersion: string | undefined): boolean => {
 // 对老版本文件中缺失的字段补默认值，避免下游代码因 undefined 崩溃
 const normalizeChapter = (c: Partial<Chapter>): Chapter => ({
   ...c,
+  id: c.id ?? generateId(),
+  projectId: c.projectId ?? '',
   title: c.title ?? '',
   parentId: c.parentId ?? null,
   summary: c.summary ?? '',

@@ -63,6 +63,12 @@ export const disposeSearchWorker = (): void => {
 // 模块级缓存：characterId -> { profileRef, text }，避免每次搜索都对每个角色 JSON.stringify(profile)。
 // character 增删改后 profile 引用变化，缓存自动失效（引用比较），无需跨 slice 主动更新。
 const profileSearchCache = new Map<string, { profileRef: unknown; text: string }>();
+
+// 清空角色搜索文本缓存：项目切换/关闭时调用，避免上一项目的角色缓存残留
+export const clearProfileSearchCache = (): void => {
+  profileSearchCache.clear();
+};
+
 const getProfileSearchText = (characterId: string, profile: unknown): string => {
   const cached = profileSearchCache.get(characterId);
   if (cached && cached.profileRef === profile) {
@@ -270,15 +276,30 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
   },
 
   restoreRecoveryDraft: () => {
-    const { recoveryDraft, chapters } = get();
+    const { recoveryDraft, currentProjectId, chapters, contentEpoch } = get();
     if (!recoveryDraft) return;
+
+    // 草稿归属项目与当前打开项目不一致时拒绝恢复，避免把草稿内容写到错误章节造成数据污染。
+    // 不清除草稿，让用户先打开正确项目后再恢复。
+    if (recoveryDraft.projectId !== currentProjectId) {
+      console.warn('Recovery draft belongs to a different project');
+      return;
+    }
+    const targetChapter = chapters.find(c => c.id === recoveryDraft.chapterId);
+    if (!targetChapter) {
+      console.warn('Recovery draft target chapter not found');
+      return; // 不清除草稿
+    }
 
     const updatedChapters = chapters.map(c =>
       c.id === recoveryDraft.chapterId ? { ...c, content: recoveryDraft.content } : c
     );
-    set({ chapters: updatedChapters, recoveryDraft: null });
-    // 外部替换内容，通知编辑器强制刷新
-    get().bumpContentEpoch();
+    // 把 bumpContentEpoch 内联到单次 set，避免独立 set 产生中间订阅状态
+    set({
+      chapters: updatedChapters,
+      recoveryDraft: null,
+      contentEpoch: contentEpoch + 1,
+    });
     void storage.clearRecoveryDraft();
   },
 

@@ -8,6 +8,7 @@
 import type { StateCreator } from 'zustand';
 import type { AppState } from '../appState';
 import type { ChapterVersion, Chapter } from '@/types';
+import { CHAPTER_STATUSES } from '@/types';
 import { generateId, markDirty, countWords, storage } from '@/utils/storage';
 import { HISTORY_MAX_LENGTH } from '@/constants/config';
 
@@ -46,10 +47,12 @@ export const createVersionHistorySlice: StateCreator<AppState, [], [], VersionHi
     if (!chapter) return;
 
     const chapterVersions = versions[chapterId] || [];
+    // trim 后 length 会回落，直接用 length+1 会与历史版本号重复；取最大 version + 1 保证单调递增
+    const maxVersion = chapterVersions.reduce((max, v) => Math.max(max, v.version), 0);
     const newVersion: ChapterVersion = {
       id: generateId(),
       chapterId,
-      version: chapterVersions.length + 1,
+      version: maxVersion + 1,
       content: chapter.content,
       wordCount: chapter.wordCount,
       snapshotTime: new Date().toISOString(),
@@ -87,10 +90,12 @@ export const createVersionHistorySlice: StateCreator<AppState, [], [], VersionHi
     const now = new Date().toISOString();
 
     // 1. 保存当前内容作为恢复前备份版本（内联到单次 set，避免独立 set 产生中间订阅状态）
+    // trim 后 length 会回落，直接用 length+1 会与历史版本号重复；取最大 version + 1 保证单调递增
+    const maxVersion = chapterVersions.reduce((max, v) => Math.max(max, v.version), 0);
     const backupVersion: ChapterVersion = {
       id: generateId(),
       chapterId,
-      version: chapterVersions.length + 1,
+      version: maxVersion + 1,
       content: chapter.content,
       wordCount: chapter.wordCount,
       snapshotTime: now,
@@ -108,6 +113,11 @@ export const createVersionHistorySlice: StateCreator<AppState, [], [], VersionHi
 
     // 2. 恢复正文 + 元数据，合并到 chapters，避免 updateChapterContent / updateChapter 各自 set
     const wordCount = countWords(version.content.replace(/<[^>]*>/g, ''));
+    // 校验版本元数据中的 status：旧版本/外部数据可能写入非法值，未通过校验时回退到当前章节状态
+    const rawStatus = version.metadata?.status;
+    const validStatus = rawStatus && (CHAPTER_STATUSES as readonly string[]).includes(rawStatus)
+      ? rawStatus as Chapter['status']
+      : chapter.status;
     const updatedChapters = chapters.map(c =>
       c.id === chapterId
         ? {
@@ -116,7 +126,7 @@ export const createVersionHistorySlice: StateCreator<AppState, [], [], VersionHi
             wordCount,
             title: version.metadata?.title ?? c.title,
             summary: version.metadata?.summary ?? c.summary,
-            status: (version.metadata?.status as Chapter['status']) ?? c.status,
+            status: validStatus,
             theme: version.metadata?.theme ?? c.theme,
             notes: version.metadata?.notes ?? c.notes,
             updatedAt: now,
@@ -154,12 +164,17 @@ export const createVersionHistorySlice: StateCreator<AppState, [], [], VersionHi
     const h = histories[chapterId] || { past: [], future: [], lastPush: 0 };
     const now = Date.now();
     if (now - h.lastPush > 2000) {
-      h.past.push(prevContent);
-      if (h.past.length > HISTORY_MAX_LENGTH) h.past.shift();
-      h.future = [];
+      // 创建新数组，避免变异原 past/future 引用（浅拷贝会让多章节共享同一数组）
+      const basePast = h.past.length >= HISTORY_MAX_LENGTH ? h.past.slice(1) : h.past;
+      histories[chapterId] = {
+        past: [...basePast, prevContent],
+        future: [],
+        lastPush: now,
+      };
+    } else {
+      // 仅更新 lastPush，仍需创建新对象避免变异原引用
+      histories[chapterId] = { ...h, lastPush: now };
     }
-    h.lastPush = now;
-    histories[chapterId] = h;
     set({ histories });
   },
 
@@ -167,9 +182,11 @@ export const createVersionHistorySlice: StateCreator<AppState, [], [], VersionHi
     const histories = { ...get().histories };
     const h = histories[chapterId];
     if (!h || h.past.length === 0) return null;
-    h.future.unshift(currentContent);
-    const prev = h.past.pop()!;
-    histories[chapterId] = { ...h };
+    // 创建新的 past/future 数组，避免变异原数组导致跨章节共享引用被污染
+    const newPast = [...h.past];
+    const prev = newPast.pop()!;
+    const newFuture = [currentContent, ...h.future];
+    histories[chapterId] = { past: newPast, future: newFuture, lastPush: h.lastPush };
     set({ histories });
     return prev;
   },
@@ -178,9 +195,11 @@ export const createVersionHistorySlice: StateCreator<AppState, [], [], VersionHi
     const histories = { ...get().histories };
     const h = histories[chapterId];
     if (!h || h.future.length === 0) return null;
-    h.past.push(currentContent);
-    const next = h.future.shift()!;
-    histories[chapterId] = { ...h };
+    // 创建新的 past/future 数组，避免变异原数组
+    const newFuture = [...h.future];
+    const next = newFuture.shift()!;
+    const newPast = [...h.past, currentContent];
+    histories[chapterId] = { past: newPast, future: newFuture, lastPush: h.lastPush };
     set({ histories });
     return next;
   },

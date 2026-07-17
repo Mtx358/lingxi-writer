@@ -17,8 +17,11 @@ interface ToastStore {
 }
 
 const DEFAULT_DURATION = 4000;
+const MAX_TOASTS = 5;
 
-export const useToastStore = create<ToastStore>((set) => ({
+const timers = new Map<string, ReturnType<typeof setTimeout>>();
+
+export const useToastStore = create<ToastStore>((set, get) => ({
   toasts: [],
   addToast: (toast) => {
     const id = uuidv4();
@@ -27,17 +30,38 @@ export const useToastStore = create<ToastStore>((set) => ({
       id,
       duration: toast.duration ?? DEFAULT_DURATION,
     };
-    set((state) => ({ toasts: [...state.toasts, newToast] }));
-    
-    // 自动移除
-    setTimeout(() => {
-      set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) }));
+
+    const timer = setTimeout(() => {
+      get().removeToast(id);
     }, newToast.duration);
+    timers.set(id, timer);
+
+    const current = get().toasts;
+    let toasts = [...current, newToast];
+    while (toasts.length > MAX_TOASTS) {
+      const oldest = toasts[0];
+      const oldTimer = timers.get(oldest.id);
+      if (oldTimer) {
+        clearTimeout(oldTimer);
+        timers.delete(oldest.id);
+      }
+      toasts = toasts.slice(1);
+    }
+    set({ toasts });
   },
   removeToast: (id) => {
+    const timer = timers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      timers.delete(id);
+    }
     set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) }));
   },
   clearToasts: () => {
+    for (const timer of timers.values()) {
+      clearTimeout(timer);
+    }
+    timers.clear();
     set({ toasts: [] });
   },
 }));

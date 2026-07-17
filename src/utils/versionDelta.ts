@@ -12,53 +12,24 @@ import type { ChapterVersion } from '@/types';
  *   - decodeDeltasToVersions(stored)   将存储形式重建为完整版本序列
  *
  * diff 格式（字符串）：
- *   `<prefixLen>\u0000<aMid>\u0001<bMid>\u0001<suffixLen>`
- *   - prefixLen: 公共前缀长度
- *   - aMid:      旧版本中间被替换的片段
- *   - bMid:      新版本中间替换后的片段
- *   - suffixLen: 公共后缀长度
+ *   新格式：JSON.stringify({ p: prefixLen, a: aMid, b: bMid, s: suffixLen })
+ *     - p: 公共前缀长度
+ *     - a: 旧版本中间被替换的片段
+ *     - b: 新版本中间替换后的片段
+ *     - s: 公共后缀长度
  *   完全相同时存空字符串以避免重复内容。
+ *   JSON.stringify 自动处理所有特殊字符，彻底消除分隔符歧义。
  *
- * 兼容性：delta 字段为 null/undefined 时按"完整内容"处理，旧文件可直接读取。
+ * 兼容性：
+ *   - delta 字段为 null/undefined 时按"完整内容"处理，旧文件可直接读取。
+ *   - 旧格式 `<prefixLen>\u0000<aMid>\u0001<bMid>\u0001<suffixLen>` 仍可解析
+ *     （aMid/bMid 未转义，仅适用于内容中不含 \u0001 的旧数据）。
  */
 
-// 控制字符：作为 delta 各字段的分隔符。章节正文（HTML）理论上极少包含它们，
-// 但不能假设绝对不会出现，因此对 aMid/bMid 中的分隔符做转义。
+// 控制字符：仅用于解析旧格式 delta 的向后兼容。
+// 新格式使用 JSON，不再依赖分隔符，也无需转义。
 const SEP_MID = '\u0000';
 const SEP_PART = '\u0001';
-
-// 转义 aMid/bMid 中的分隔符（SQL 风格加倍：\u0000 → \u0000\u0000，\u0001 → \u0001\u0001）
-const escapeMid = (s: string): string =>
-  s.replace(/\u0000/g, '\u0000\u0000').replace(/\u0001/g, '\u0001\u0001');
-
-// 还原转义后的中间片段
-const unescapeMid = (s: string): string =>
-  s.replace(/\u0001\u0001/g, '\u0001').replace(/\u0000\u0000/g, '\u0000');
-
-// 在尊重加倍转义的前提下按 delimiter 分割：
-// delimiter 连续出现两次视为字面量（合并为一个），出现一次视为字段边界。
-function splitRespectingEscape(s: string, delimiter: string): string[] {
-  const parts: string[] = [];
-  let current = '';
-  let i = 0;
-  while (i < s.length) {
-    if (s[i] === delimiter) {
-      if (s[i + 1] === delimiter) {
-        current += delimiter; // 转义的字面量分隔符
-        i += 2;
-      } else {
-        parts.push(current);
-        current = '';
-        i += 1;
-      }
-    } else {
-      current += s[i];
-      i += 1;
-    }
-  }
-  parts.push(current);
-  return parts;
-}
 
 export interface StoredVersion {
   id: string;
@@ -84,14 +55,40 @@ function computeSimpleDiff(a: string, b: string): string {
   while (suffixLen < minLen - prefixLen && a[a.length - 1 - suffixLen] === b[b.length - 1 - suffixLen]) suffixLen++;
   const aMid = a.slice(prefixLen, a.length - suffixLen);
   const bMid = b.slice(prefixLen, b.length - suffixLen);
-  // 转义中间片段中的分隔符，防止内容里的 \u0000/\u0001 破坏 delta 结构
-  return `${prefixLen}${SEP_MID}${escapeMid(aMid)}${SEP_PART}${escapeMid(bMid)}${SEP_PART}${suffixLen}`;
+  // JSON 序列化整个对象，自动处理所有特殊字符，彻底消除分隔符歧义
+  return JSON.stringify({ p: prefixLen, a: aMid, b: bMid, s: suffixLen });
 }
 
 // 将 diff 应用到基线，重建出新版本内容。delta 损坏时抛错而非静默回退，避免产生错误内容。
 function applySimpleDiff(base: string, delta: string): string {
   if (delta === '') return base;
-  // prefixLen 为纯数字，不会含 SEP_MID，因此第一个 SEP_MID 即 prefixLen 与 aMid 的边界
+  // 新格式：JSON 对象 { p, a, b, s }
+  if (delta.startsWith('{')) {
+    let parsed: { p?: unknown; a?: unknown; b?: unknown; s?: unknown };
+    try {
+      parsed = JSON.parse(delta);
+    } catch {
+      throw new Error('Invalid delta: JSON parse failed');
+    }
+    const prefixLen = Number(parsed.p);
+    const suffixLen = Number(parsed.s);
+    if (!Number.isInteger(prefixLen) || prefixLen < 0) {
+      throw new Error('Invalid delta: invalid prefix length');
+    }
+    if (!Number.isInteger(suffixLen) || suffixLen < 0) {
+      throw new Error('Invalid delta: invalid suffix length');
+    }
+    if (typeof parsed.a !== 'string' || typeof parsed.b !== 'string') {
+      throw new Error('Invalid delta: a/b must be strings');
+    }
+    if (prefixLen + suffixLen > base.length) {
+      throw new Error('Invalid delta: length out of range for base');
+    }
+    return base.slice(0, prefixLen) + parsed.b + base.slice(base.length - suffixLen);
+  }
+  // 旧格式向后兼容：<prefixLen>\u0000<aMid>\u0001<bMid>\u0001<suffixLen>
+  // 注意：旧格式对 aMid/bMid 中的分隔符做 SQL 风格加倍转义，存在转义歧义 bug。
+  // 此处仅做尽力解析（简单 split），含 \u0001 的旧 delta 会因 parts.length !== 3 抛错。
   const sepMidIdx = delta.indexOf(SEP_MID);
   if (sepMidIdx < 0) {
     throw new Error('Invalid delta: missing SEP_MID boundary');
@@ -100,13 +97,11 @@ function applySimpleDiff(base: string, delta: string): string {
   if (Number.isNaN(prefixLen) || prefixLen < 0) {
     throw new Error('Invalid delta: invalid prefix length');
   }
-  // 在尊重转义的前提下按 SEP_PART 拆分为 [aMid, bMid, suffixLen]
-  const parts = splitRespectingEscape(delta.slice(sepMidIdx + 1), SEP_PART);
+  const parts = delta.slice(sepMidIdx + 1).split(SEP_PART);
   if (parts.length !== 3) {
     throw new Error('Invalid delta: expected 3 parts after SEP_MID');
   }
-  // parts[0] 为旧内容被替换片段（重建不需要），parts[1] 为新内容片段
-  const bMid = unescapeMid(parts[1]);
+  const bMid = parts[1];
   const suffixLen = parseInt(parts[2], 10);
   if (Number.isNaN(suffixLen) || suffixLen < 0) {
     throw new Error('Invalid delta: invalid suffix length');

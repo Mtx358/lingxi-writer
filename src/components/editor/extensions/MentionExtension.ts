@@ -1,4 +1,4 @@
-import { Node } from '@tiptap/core';
+import { Node, mergeAttributes } from '@tiptap/core';
 import type { Node as PMNode, DOMOutputSpec } from '@tiptap/pm/model';
 import type { RawCommands } from '@tiptap/core';
 
@@ -52,18 +52,16 @@ export const MentionExtension = Node.create({
     ];
   },
 
-  renderHTML({ node }: { node: PMNode }): DOMOutputSpec {
+  renderHTML({ node, HTMLAttributes }: { node: PMNode; HTMLAttributes: Record<string, any> }): DOMOutputSpec {
     return [
       'span',
-      {
+      mergeAttributes(HTMLAttributes, {
         'data-mention': '',
         'data-id': node.attrs.id,
-        'data-label': node.attrs.label,
         'data-type': node.attrs.type,
-        class: 'mention-node bg-amber-500/20 text-amber-300 px-0.5 rounded border-b border-amber-500/30 cursor-pointer',
-      },
-      node.attrs.label,
-    ];
+        class: 'mention-node bg-amber-500/20 text-amber-300 px-1 py-0.5 rounded cursor-pointer',
+      }),
+      node.attrs.label ?? ''];
   },
 
   addCommands() {
