@@ -45,6 +45,9 @@ export function SafeHtml({ html, className, tag = 'div' }: SafeHtmlProps) {
   return <Tag className={className} dangerouslySetInnerHTML={{ __html: sanitized }} />;
 }
 
+// sanitizeHtml 与 SafeHtml 共享 ALLOWED_TAGS/ALLOWED_ATTR/ensureHook 等私有状态，
+// 提取到独立文件会破坏封装；fast-refresh 警告为已知取舍。
+// eslint-disable-next-line react-refresh/only-export-components
 export function sanitizeHtml(html: string): string {
   ensureHook();
   return DOMPurify.sanitize(html, {

@@ -1,3 +1,6 @@
+// 本文件同时导出 Zustand store、便捷 toast 方法与 ToastContainer 组件，
+// 是 React + Zustand toast 系统的标准模式；fast-refresh 警告为已知取舍。
+/* eslint-disable react-refresh/only-export-components */
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
 

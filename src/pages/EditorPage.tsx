@@ -58,7 +58,7 @@ export default function EditorPage() {
 
   // O4: 引导步骤。prepare 回调在进入该步前自动展开/激活目标面板，
   // 避免面板收起时 getBoundingClientRect 返回 0 宽高导致引导跳过该步。
-  // setLeft/RightPanelCollapsed、setRightPanelTab 均为 Zustand setter，引用稳定，useMemo 空依赖即可。
+  // setLeft/RightPanelCollapsed、setRightPanelTab 均为 Zustand setter，引用稳定，补全依赖零成本。
   const editorTourSteps = useMemo<TourStep[]>(() => [
     {
       selector: '[data-tour="outline-panel"]',
@@ -106,7 +106,7 @@ export default function EditorPage() {
         setRightPanelTab('materials');
       },
     },
-  ], []);
+  ], [setLeftPanelCollapsed, setRightPanelCollapsed, setRightPanelTab]);
 
   // 注册全局快捷键：Ctrl+S 保存快照 + Ctrl+K 打开全局搜索
   // setShowSearch 是 useState setter，引用稳定，useMemo 空依赖即可
@@ -152,6 +152,7 @@ export default function EditorPage() {
     if (localStorage.getItem('has_seen_editor_tour')) return;
     const timer = setTimeout(() => setShowTour(true), 500);
     return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id]);
 
   const handleTourComplete = () => {

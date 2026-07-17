@@ -6,14 +6,10 @@ import type { Material, MaterialAttachment } from '@/types';
 import { generateId } from '@/utils/storage';
 // 图片 dataURL LRU 缓存与清理函数已抽离到 utils/imageCache，供组件层与 store 层共享，
 // 避免 store 反向 import 组件层形成循环依赖。
-import { readImageDataUrl, clearImageCache, clearImageErrorCache } from '@/utils/imageCache';
+import { readImageDataUrl, clearImageErrorCache } from '@/utils/imageCache';
 
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'];
 const AUDIO_EXTS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'];
-
-// 重新导出清理函数，保持组件层调用方（如 handleAddAttachment 内的 clearImageErrorCache）
-// 与历史导入路径兼容；新代码请直接从 '@/utils/imageCache' 导入。
-export { clearImageCache, clearImageErrorCache };
 
 function getAttachmentIcon(ext: string) {
   if (IMAGE_EXTS.includes(ext)) return Image;
