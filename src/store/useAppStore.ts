@@ -25,6 +25,8 @@ import { createChapterSlice } from './slices/chapterSlice';
 import { createEntitySlice } from './slices/entitySlice';
 import { createVersionHistorySlice } from './slices/versionHistorySlice';
 import { createUISlice } from './slices/uiSlice';
+import { createOutlinePolishSlice } from './slices/outlinePolishSlice';
+import { createLingxiSlice } from './slices/lingxiSlice';
 
 export const useAppStore = create<AppState>()((...a) => {
   const store = {
@@ -33,6 +35,8 @@ export const useAppStore = create<AppState>()((...a) => {
     ...createEntitySlice(...a),
     ...createVersionHistorySlice(...a),
     ...createUISlice(...a),
+    ...createOutlinePolishSlice(...a),
+    ...createLingxiSlice(...a),
   };
 
   // 初始化自动保存回调：定时触发时保存当前项目（localStorage 项目无 filePath，按 currentProjectId 触发）

@@ -3,6 +3,7 @@ import { X, Upload, FileText, AlertCircle, Check, File } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/store/useAppStore';
 import { parseMarkdown, parsePlainText, parseDocx } from '@/utils/importUtils';
+import { useFocusTrap } from '@/hooks/useFocusTrap';
 import type { ImportResult, HeadingMapping, HeadingTarget } from '@/utils/importUtils';
 
 const HEADING_OPTIONS: { value: HeadingTarget; label: string }[] = [
@@ -44,6 +45,10 @@ export default function ImportModal({ onClose }: ImportModalProps) {
   // 跟踪 docx object URL 以便释放；标记挂载状态避免卸载后 setState
   const objectUrlRef = useRef<string | null>(null);
   const isMountedRef = useRef(true);
+  // 同步守卫：防止双击"确认导入"在 setImporting(true) 异步生效前并发触发两次导入
+  const importingRef = useRef(false);
+  // 组件挂载即视为打开（由父级条件渲染控制），焦点陷阱常驻激活
+  const dialogRef = useFocusTrap<HTMLDivElement>(true);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -56,6 +61,16 @@ export default function ImportModal({ onClose }: ImportModalProps) {
       }
     };
   }, []);
+
+  // Esc 关闭模态（IME 组合输入时忽略，避免中断中文输入）
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [onClose]);
 
   useEffect(() => {
     if (!fileContent && !isDocx) return;
@@ -165,12 +180,15 @@ export default function ImportModal({ onClose }: ImportModalProps) {
 
   const handleConfirmImport = async () => {
     if (!importResult) return;
-    if (importing) return;
+    if (importingRef.current) return;
+    importingRef.current = true;
     setImporting(true);
 
+    // 记录已创建的项目 ID，导入失败时回滚半成品项目，避免首页残留空壳
+    let createdProjectId: string | null = null;
     try {
-      const project = createProject(importResult.title || '导入作品', 'blank');
-      const projectId = project.id;
+      const project = await createProject(importResult.title || '导入作品', 'blank');
+      createdProjectId = project.id;
 
       let order = 0;
       importResult.chapters.forEach(ch => {
@@ -185,12 +203,24 @@ export default function ImportModal({ onClose }: ImportModalProps) {
       // 用 await 替代原 500ms setTimeout 盲等
       await useAppStore.getState().saveProject();
       onClose();
-      navigate(`/project/${projectId}/editor`);
+      navigate(`/project/${createdProjectId}/editor`);
     } catch (e) {
       console.error('导入失败:', e);
+      // 回滚半成品项目：删除已创建的项目及其关联存储键
+      if (createdProjectId) {
+        try {
+          await useAppStore.getState().deleteProject(createdProjectId);
+        } catch (rollbackErr) {
+          console.error('回滚失败项目时出错:', rollbackErr);
+        }
+      }
       if (!isMountedRef.current) return;
+      // 清空 importResult 让视图回退到输入区，使 error 文案可见
+      // （error 仅在 !importResult 分支渲染，否则用户在预览态看不到失败提示）
+      setImportResult(null);
       setError('导入失败，请重试');
     } finally {
+      importingRef.current = false;
       if (isMountedRef.current) setImporting(false);
     }
   };
@@ -233,9 +263,13 @@ export default function ImportModal({ onClose }: ImportModalProps) {
   ) : null;
 
   return (
-    <div 
+    <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in"
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="导入作品"
     >
       <div 
         className="card p-6 w-full max-w-lg mx-4 animate-slide-up"
@@ -246,14 +280,19 @@ export default function ImportModal({ onClose }: ImportModalProps) {
           <button
             onClick={onClose}
             className="p-1 rounded text-ink-500 hover:text-ink-300 hover:bg-ink-800 transition-colors"
+            aria-label="关闭"
           >
-            <X className="w-5 h-5" />
+            <X className="w-5 h-5" aria-hidden="true" />
           </button>
         </div>
 
         {!importResult ? (
           <>
             <div
+              role="button"
+              tabIndex={0}
+              aria-label="点击或拖拽文件到此处导入"
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInputRef.current?.click(); } }}
               onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
               onDragLeave={() => setDragOver(false)}
               onDrop={handleDrop}
@@ -284,8 +323,11 @@ export default function ImportModal({ onClose }: ImportModalProps) {
             {mappingConfig}
 
             {error && (
-              <div className="mt-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+              <div
+                role="alert"
+                className="mt-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 flex items-start gap-2"
+              >
+                <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" aria-hidden="true" />
                 <span className="text-sm text-red-300">{error}</span>
               </div>
             )}

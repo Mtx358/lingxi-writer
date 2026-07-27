@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Sparkles, ChevronRight, X, Check, AlertTriangle } from 'lucide-react';
+import { useFocusTrap } from '@/hooks/useFocusTrap';
 
 interface GuideStep {
   id: string;
@@ -17,7 +18,7 @@ interface OnboardingGuideProps {
 const GUIDE_STEPS: GuideStep[] = [
   {
     id: 'welcome',
-    title: '欢迎来到创作工坊',
+    title: '欢迎来到灵犀写作助手',
     description: '一个以"人主导、AI 辅助"为核心理念的专业写作工具。进入编辑器后，还会有更详细的交互式功能引导。',
     icon: Sparkles,
   },
@@ -40,12 +41,24 @@ export default function OnboardingGuide({ onComplete, onSkip }: OnboardingGuideP
   const [isAnimating, setIsAnimating] = useState(false);
   // 动画定时器：卸载时清理，避免卸载后 setState
   const animTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 焦点陷阱：组件挂载即代表引导显示，锁定 Tab 在模态内循环
+  const dialogRef = useFocusTrap<HTMLDivElement>(true);
 
   useEffect(() => {
     return () => {
       if (animTimerRef.current) clearTimeout(animTimerRef.current);
     };
   }, []);
+
+  // Esc 跳过引导（IME 组合输入时忽略）
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Escape') onSkip();
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [onSkip]);
 
   const step = GUIDE_STEPS[currentStep];
   const isLast = currentStep === GUIDE_STEPS.length - 1;
@@ -80,7 +93,13 @@ export default function OnboardingGuide({ onComplete, onSkip }: OnboardingGuideP
   const Icon = step.icon;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md animate-fade-in">
+    <div
+      ref={dialogRef}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md animate-fade-in"
+      role="dialog"
+      aria-modal="true"
+      aria-label="新手引导"
+    >
       {/* Decorative elements */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-amber-500/10 rounded-full blur-3xl" />
@@ -101,8 +120,9 @@ export default function OnboardingGuide({ onComplete, onSkip }: OnboardingGuideP
           <button
             onClick={onSkip}
             className="absolute top-4 right-4 p-1.5 rounded-lg text-ink-500 hover:text-ink-300 hover:bg-ink-800 transition-colors"
+            aria-label="跳过引导"
           >
-            <X className="w-5 h-5" />
+            <X className="w-5 h-5" aria-hidden="true" />
           </button>
 
           {/* Step content */}

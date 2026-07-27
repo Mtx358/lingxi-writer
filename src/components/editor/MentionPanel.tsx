@@ -4,6 +4,7 @@ import { User, Globe, Search } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { pushOverlay, popOverlay } from '@/utils/overlayState';
 import type { Character, SettingItem } from '@/types';
+import Empty from '@/components/Empty';
 
 interface MentionPanelProps {
   editor: ReturnType<typeof useEditor>;
@@ -192,9 +193,10 @@ export default function MentionPanel({ editor, position, onClose }: MentionPanel
 
       <div className="max-h-64 overflow-y-auto">
         {filteredItems.length === 0 ? (
-          <div className="p-4 text-center text-ink-500 text-xs">
-            {query ? '未找到匹配项' : '暂无数据'}
-          </div>
+          <Empty
+            title={query ? '未找到匹配项' : '暂无数据'}
+            className="p-4 text-xs"
+          />
         ) : (
           filteredItems.map((item, index) => (
             <button

@@ -73,30 +73,6 @@ export default function TiptapEditor() {
     };
   }, [showContextMenu]);
 
-  // O3: 浮层（提及面板/右键菜单等）打开时，拦截导航键与 Enter/Tab/Esc，
-  // 阻止其透传到 ProseMirror 的 keymap（bubble 阶段监听器）导致光标移动或换行。
-  // 使用捕获阶段确保先于 ProseMirror 处理；仅 stopPropagation（非 stopImmediatePropagation），
-  // 让浮层自身的 window 级捕获监听器仍可正常响应（window 在 editorContainer 之外）。
-  useEffect(() => {
-    const container = editorContainerRef.current;
-    if (!container) return;
-    const blockedKeys = new Set([
-      'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-      'Enter', 'Tab', 'Escape',
-      'Home', 'End', 'PageUp', 'PageDown',
-    ]);
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!isOverlayOpen()) return;
-      if (e.isComposing || e.keyCode === 229) return;
-      if (blockedKeys.has(e.key)) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-    };
-    container.addEventListener('keydown', handleKeyDown, true);
-    return () => container.removeEventListener('keydown', handleKeyDown, true);
-  }, []);
-
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -123,12 +99,13 @@ export default function TiptapEditor() {
       const cid = currentChapterIdRef.current;
       if (!cid) return;
 
-      const html = editor.getHTML();
-
-      // 防抖写入 store（EDITOR_CONTENT_UPDATE_DEBOUNCE ms），避免每敲一个字都触发全量状态更新和磁盘 IO
+      // H7 性能修复：getHTML() 遍历整个 ProseMirror 文档序列化为 HTML，O(N) per keystroke。
+      // 长文档（数万字）每秒数次按键 × O(N) 会产生可感知输入延迟。
+      // 将 getHTML() 移入防抖回调内，仅在防抖触发时执行一次（EDITOR_CONTENT_UPDATE_DEBOUNCE ms 内最多一次）。
+      // 章节切换 flush（L194）仍同步调 editor.getHTML()，不受影响。
       if (updateTimerRef.current) clearTimeout(updateTimerRef.current);
       updateTimerRef.current = setTimeout(() => {
-        useAppStore.getState().updateChapterContent(cid, html);
+        useAppStore.getState().updateChapterContent(cid, editor.getHTML());
       }, EDITOR_CONTENT_UPDATE_DEBOUNCE);
 
       // 检测 @ 触发提及面板：使用光标真实视口坐标定位
@@ -139,15 +116,46 @@ export default function TiptapEditor() {
       const atIndex = textBefore.lastIndexOf('@');
 
       if (atIndex !== -1 && atIndex === textBefore.length - 1) {
-        const coords = editor.view.coordsAtPos(pos);
-        setMentionPosition({
-          x: coords.left,
-          y: coords.bottom + 4,
-        });
-        setShowMentionPanel(true);
+        // coordsAtPos 在视图未完成布局或 pos 失效时可能抛错，
+        // 用 try/catch 包裹避免影响本次 onUpdate 的后续逻辑
+        try {
+          const coords = editor.view.coordsAtPos(pos);
+          setMentionPosition({
+            x: coords.left,
+            y: coords.bottom + 4,
+          });
+          setShowMentionPanel(true);
+        } catch { /* 视图未就绪，跳过提及面板定位 */ }
       }
     },
   });
+
+  // O3: 浮层（提及面板/右键菜单等）打开时，拦截导航键与 Enter/Tab/Esc，
+  // 阻止其透传到 ProseMirror 的 keymap（bubble 阶段监听器）导致光标移动或换行。
+  // 使用捕获阶段确保先于 ProseMirror 处理；仅 stopPropagation（非 stopImmediatePropagation），
+  // 让浮层自身的 window 级捕获监听器仍可正常响应（window 在 editorContainer 之外）。
+  // 依赖 editor：组件首次渲染时 editor 为 null，渲染的是无 ref 的 loading div，
+  // editorContainerRef.current 为 null，effect 提前返回。useEditor 创建编辑器后组件重渲染，
+  // 带 ref 的 div 挂载——必须把 editor 加入依赖，让 effect 在编辑器就绪后重新挂载监听器。
+  useEffect(() => {
+    const container = editorContainerRef.current;
+    if (!container) return;
+    const blockedKeys = new Set([
+      'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+      'Enter', 'Tab', 'Escape',
+      'Home', 'End', 'PageUp', 'PageDown',
+    ]);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isOverlayOpen()) return;
+      if (e.isComposing || e.keyCode === 229) return;
+      if (blockedKeys.has(e.key)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    container.addEventListener('keydown', handleKeyDown, true);
+    return () => container.removeEventListener('keydown', handleKeyDown, true);
+  }, [editor]);
 
   // O1: AI 续写/润色逻辑由 useEditorAI hook 接管，返回生成态、ref 与中止入口
   const {
@@ -237,8 +245,39 @@ export default function TiptapEditor() {
   // - 否则：先 setCurrentChapter 触发章节加载，再延迟执行滚动（等待章节切换 effect 完成 setContent）
   // position 是基于剥离 HTML 后的纯文本偏移，需遍历 ProseMirror 文档节点累计文本长度来定位。
   // blockText 是版本 diff 块的文本，编辑器查找首个文本包含该值的块级节点并滚动高亮。
+  // 跨章节滚动用 ref 存储定时器：currentChapterId 在依赖数组中，setCurrentChapter 后
+  // effect 会重跑并清理普通 cleanup 的 timer，导致 doScroll 永不执行。
+  // 用 ref + 单独的卸载 cleanup 避免此问题。
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 跟踪高亮移除定时器，与 scrollTimerRef 一同在卸载时清理避免泄漏
+  const highlightRemovalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (!editor || !pendingScrollTo) return;
+    return () => {
+      if (scrollTimerRef.current) {
+        clearTimeout(scrollTimerRef.current);
+        scrollTimerRef.current = null;
+      }
+      if (highlightRemovalTimerRef.current) {
+        clearTimeout(highlightRemovalTimerRef.current);
+        highlightRemovalTimerRef.current = null;
+      }
+    };
+  }, []);
+  useEffect(() => {
+    // C-L1 修复：early-return 路径前清理 scrollTimerRef。
+    // setPendingScrollTo(null) 会触发 effect 重跑并走到这里，若不清理，
+    // 之前设置的延迟滚动定时器仍会触发 doScroll，可能滚动到已无意义的章节位置
+    if (!editor || !pendingScrollTo) {
+      if (scrollTimerRef.current) {
+        clearTimeout(scrollTimerRef.current);
+        scrollTimerRef.current = null;
+      }
+      if (highlightRemovalTimerRef.current) {
+        clearTimeout(highlightRemovalTimerRef.current);
+        highlightRemovalTimerRef.current = null;
+      }
+      return;
+    }
     const { chapterId, position, blockText } = pendingScrollTo;
     // 复制并立即清空 store，避免重复触发
     const targetPos = position;
@@ -246,7 +285,7 @@ export default function TiptapEditor() {
     setPendingScrollTo(null);
 
     const doScroll = () => {
-      if (!editor) return;
+      if (!editor || editor.isDestroyed) return;
       let pmPos = -1;
       let endPm = -1;
 
@@ -296,7 +335,9 @@ export default function TiptapEditor() {
       // 短暂高亮提示：临时加 Highlight，2 秒后移除
       try {
         editor.chain().setTextSelection({ from: pmPos, to: endPm }).toggleHighlight().run();
-        setTimeout(() => {
+        if (highlightRemovalTimerRef.current) clearTimeout(highlightRemovalTimerRef.current);
+        highlightRemovalTimerRef.current = setTimeout(() => {
+          highlightRemovalTimerRef.current = null;
           if (editor && !editor.isDestroyed) {
             editor.chain().setTextSelection({ from: pmPos, to: endPm }).toggleHighlight().run();
           }
@@ -308,10 +349,16 @@ export default function TiptapEditor() {
       doScroll();
     } else {
       // 切换章节：setCurrentChapter 会触发章节切换 effect 执行 setContent，
-      // 这里延迟到 EDITOR_SWITCH_DELAY 之后再执行滚动，确保编辑器内容已就绪
+      // 这里延迟到 EDITOR_SWITCH_DELAY 之后再执行滚动，确保编辑器内容已就绪。
+      // 用 ref 存储定时器而非返回 cleanup——currentChapterId 在依赖数组中，
+      // setCurrentChapter 后 effect 会重跑，普通 cleanup 会清掉定时器导致 doScroll 永不执行。
+      // ref + 单独的卸载 effect 清理，保证定时器在 effect 重跑后仍能触发。
       setCurrentChapter(chapterId);
-      const timer = setTimeout(doScroll, EDITOR_SWITCH_DELAY + 50);
-      return () => clearTimeout(timer);
+      if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+      scrollTimerRef.current = setTimeout(() => {
+        scrollTimerRef.current = null;
+        doScroll();
+      }, EDITOR_SWITCH_DELAY + 50);
     }
   }, [editor, pendingScrollTo, currentChapterId, setPendingScrollTo, setCurrentChapter]);
 
@@ -380,29 +427,33 @@ export default function TiptapEditor() {
           onClick={() => editor.chain().focus().toggleBold().run()}
           className={`p-2 rounded hover:bg-gray-700/50 transition-colors ${editor.isActive('bold') ? 'bg-gray-700 text-amber-400' : 'text-gray-400'}`}
           title="加粗"
+          aria-label="加粗"
         >
-          <Bold size={18} />
+          <Bold size={18} aria-hidden="true" />
         </button>
         <button
           onClick={() => editor.chain().focus().toggleItalic().run()}
           className={`p-2 rounded hover:bg-gray-700/50 transition-colors ${editor.isActive('italic') ? 'bg-gray-700 text-amber-400' : 'text-gray-400'}`}
           title="斜体"
+          aria-label="斜体"
         >
-          <Italic size={18} />
+          <Italic size={18} aria-hidden="true" />
         </button>
         <button
           onClick={() => editor.chain().focus().toggleUnderline().run()}
           className={`p-2 rounded hover:bg-gray-700/50 transition-colors ${editor.isActive('underline') ? 'bg-gray-700 text-amber-400' : 'text-gray-400'}`}
           title="下划线"
+          aria-label="下划线"
         >
-          <UnderlineIcon size={18} />
+          <UnderlineIcon size={18} aria-hidden="true" />
         </button>
         <button
           onClick={() => editor.chain().focus().toggleStrike().run()}
           className={`p-2 rounded hover:bg-gray-700/50 transition-colors ${editor.isActive('strike') ? 'bg-gray-700 text-amber-400' : 'text-gray-400'}`}
           title="删除线"
+          aria-label="删除线"
         >
-          <Strikethrough size={18} />
+          <Strikethrough size={18} aria-hidden="true" />
         </button>
 
         <div className="w-px h-6 bg-gray-600 mx-2" />
@@ -411,22 +462,25 @@ export default function TiptapEditor() {
           onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
           className={`p-2 rounded hover:bg-gray-700/50 transition-colors ${editor.isActive('heading', { level: 1 }) ? 'bg-gray-700 text-amber-400' : 'text-gray-400'}`}
           title="标题1"
+          aria-label="标题1"
         >
-          <Heading1 size={18} />
+          <Heading1 size={18} aria-hidden="true" />
         </button>
         <button
           onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
           className={`p-2 rounded hover:bg-gray-700/50 transition-colors ${editor.isActive('heading', { level: 2 }) ? 'bg-gray-700 text-amber-400' : 'text-gray-400'}`}
           title="标题2"
+          aria-label="标题2"
         >
-          <Heading2 size={18} />
+          <Heading2 size={18} aria-hidden="true" />
         </button>
         <button
           onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
           className={`p-2 rounded hover:bg-gray-700/50 transition-colors ${editor.isActive('heading', { level: 3 }) ? 'bg-gray-700 text-amber-400' : 'text-gray-400'}`}
           title="标题3"
+          aria-label="标题3"
         >
-          <Heading3 size={18} />
+          <Heading3 size={18} aria-hidden="true" />
         </button>
 
         <div className="w-px h-6 bg-gray-600 mx-2" />
@@ -435,29 +489,33 @@ export default function TiptapEditor() {
           onClick={() => editor.chain().focus().toggleBulletList().run()}
           className={`p-2 rounded hover:bg-gray-700/50 transition-colors ${editor.isActive('bulletList') ? 'bg-gray-700 text-amber-400' : 'text-gray-400'}`}
           title="无序列表"
+          aria-label="无序列表"
         >
-          <List size={18} />
+          <List size={18} aria-hidden="true" />
         </button>
         <button
           onClick={() => editor.chain().focus().toggleOrderedList().run()}
           className={`p-2 rounded hover:bg-gray-700/50 transition-colors ${editor.isActive('orderedList') ? 'bg-gray-700 text-amber-400' : 'text-gray-400'}`}
           title="有序列表"
+          aria-label="有序列表"
         >
-          <ListOrdered size={18} />
+          <ListOrdered size={18} aria-hidden="true" />
         </button>
         <button
           onClick={() => editor.chain().focus().toggleBlockquote().run()}
           className={`p-2 rounded hover:bg-gray-700/50 transition-colors ${editor.isActive('blockquote') ? 'bg-gray-700 text-amber-400' : 'text-gray-400'}`}
           title="引用"
+          aria-label="引用"
         >
-          <Quote size={18} />
+          <Quote size={18} aria-hidden="true" />
         </button>
         <button
           onClick={() => editor.chain().focus().setHorizontalRule().run()}
           className="p-2 rounded hover:bg-gray-700/50 transition-colors text-gray-400"
           title="分割线"
+          aria-label="分割线"
         >
-          <Minus size={18} />
+          <Minus size={18} aria-hidden="true" />
         </button>
 
         <div className="w-px h-6 bg-gray-600 mx-2" />
@@ -466,16 +524,18 @@ export default function TiptapEditor() {
           onClick={() => editor.chain().focus().toggleLink({ href: '#' }).run()}
           className={`p-2 rounded hover:bg-gray-700/50 transition-colors ${editor.isActive('link') ? 'bg-gray-700 text-amber-400' : 'text-gray-400'}`}
           title="链接"
+          aria-label="链接"
         >
-          <Link2 size={18} />
+          <Link2 size={18} aria-hidden="true" />
         </button>
 
         <button
           onClick={handleInsertMention}
           className="p-2 rounded hover:bg-gray-700/50 transition-colors text-gray-400"
           title="插入@提及"
+          aria-label="插入@提及"
         >
-          <AtSign size={18} />
+          <AtSign size={18} aria-hidden="true" />
         </button>
 
         <div className="flex-1" />
@@ -484,17 +544,19 @@ export default function TiptapEditor() {
           onClick={() => editor.chain().focus().undo().run()}
           className="p-2 rounded hover:bg-gray-700/50 transition-colors text-gray-400"
           title="撤销 (Ctrl+Z)"
+          aria-label="撤销"
           disabled={!editor.can().undo()}
         >
-          <Undo2 size={18} />
+          <Undo2 size={18} aria-hidden="true" />
         </button>
         <button
           onClick={() => editor.chain().focus().redo().run()}
           className="p-2 rounded hover:bg-gray-700/50 transition-colors text-gray-400"
           title="重做 (Ctrl+Y)"
+          aria-label="重做"
           disabled={!editor.can().redo()}
         >
-          <Redo2 size={18} />
+          <Redo2 size={18} aria-hidden="true" />
         </button>
 
         <div className="w-px h-6 bg-gray-600 mx-2" />
@@ -509,8 +571,9 @@ export default function TiptapEditor() {
               onClick={abortGeneration}
               className="flex items-center gap-2 px-3 py-1.5 rounded bg-red-600/20 text-red-400 hover:bg-red-600/30 transition-colors"
               title="取消生成"
+              aria-label="取消生成"
             >
-              <X size={16} />
+              <X size={16} aria-hidden="true" />
               <span className="text-sm">取消</span>
             </button>
           </div>
@@ -520,16 +583,18 @@ export default function TiptapEditor() {
               onClick={handleContinue}
               className="flex items-center gap-2 px-3 py-1.5 rounded bg-amber-600/20 text-amber-400 hover:bg-amber-600/30 transition-colors"
               title="智能续写"
+              aria-label="智能续写"
             >
-              <Wand2 size={16} />
+              <Wand2 size={16} aria-hidden="true" />
               <span className="text-sm">续写</span>
             </button>
             <button
               onClick={handlePolish}
               className="flex items-center gap-2 px-3 py-1.5 rounded bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 transition-colors"
               title="AI 润色"
+              aria-label="AI 润色"
             >
-              <Clock size={16} />
+              <Clock size={16} aria-hidden="true" />
               <span className="text-sm">润色</span>
             </button>
           </>

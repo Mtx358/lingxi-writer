@@ -1,0 +1,107 @@
+# 灵犀写作助手 Release 工作流
+#
+# 触发条件：推送 v*.*.* 格式的 tag（如 v1.0.0、v1.2.3-beta1）
+# 任务：构建 Electron 安装包并上传到 GitHub Release
+# 平台矩阵：Windows / macOS / Linux 并行构建，单次约 10-15 分钟
+#
+# 与 ci.yml 的区别：
+#   - ci.yml 在每次 push/PR 时跑测试与构建验证（不发版）
+#   - release.yml 仅在打 tag 时触发，构建可分发安装包并创建 GitHub Release
+name: Release
+
+on:
+  push:
+    tags:
+      # 仅匹配 v 开头的语义化版本号 tag
+      - 'v*.*.*'
+
+# 同一 tag 多次推送时取消旧的运行
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Build & Release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # 三平台并行构建：macOS-latest 提供 x64 + arm64 交叉编译
+        # Windows 与 Linux 仅 x64（与 electron-builder 配置一致）
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            artifact_name: lingxi-writer-linux
+          - os: windows-latest
+            platform: win
+            artifact_name: lingxi-writer-win
+          - os: macos-latest
+            platform: mac
+            artifact_name: lingxi-writer-mac
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Pre-release checks (lint + typecheck + test)
+        # 发版前重跑全套质量门禁，避免发布有 lint/type/test 错误的构建
+        # 跳过覆盖率门禁：release 仅验证可发布性，覆盖率由 ci.yml 守护
+        run: |
+          npm run lint
+          npx tsc --noEmit
+          npx tsc -p tsconfig.electron.json --noEmit
+          npm run test
+        env:
+          CI: 'true'
+
+      - name: Build Electron installer (${{ matrix.platform }})
+        # electron-builder 根据 package.json 的 build 字段生成各平台安装包
+        # 输出目录：release/
+        run: npm run electron:build:${{ matrix.platform }}
+        env:
+          # 生产构建模式
+          NODE_ENV: 'production'
+          # macOS 签名（如配置了证书）：缺失证书时跳过签名，仍输出未签名包
+          # 实际生产中应通过 secrets 注入 APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD 等
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts to GitHub Release
+        # 将 release/ 下的安装包上传到 tag 对应的 GitHub Release
+        # softprops/action-gh-release 自动创建 Release（如不存在）并附加产物
+        uses: softprops/action-gh-release@v2
+        with:
+          # 仅上传实际安装包文件，排除 *.blockmap（增量更新用，体积大且非必需）
+          # 与 latest*.yml（electron-updater 元数据，可后续单独发布）
+          files: |
+            release/*.exe
+            release/*.dmg
+            release/*.AppImage
+            release/*.deb
+            release/*.snap
+          # 草稿模式：发布者人工核对后再 publish，避免误发
+          draft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload build artifact (debug)
+        # 将整个 release/ 目录上传为 workflow artifact，便于失败时排查
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}-build
+          path: release/
+          retention-days: 7
+          if-no-files-found: warn

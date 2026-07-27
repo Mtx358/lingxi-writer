@@ -4,7 +4,9 @@ import { useAppStore } from '@/store/useAppStore';
 import type { ChapterVersion } from '@/types';
 import { formatDate } from '@/utils/storage';
 import { computeHtmlBlockDiff, applyHtmlDiffRejections } from '@/utils/diff';
+import { confirm } from '@/hooks/useConfirm';
 import type { HtmlBlockDiff } from '@/utils/diff';
+import Empty from '@/components/Empty';
 
 interface VersionHistoryPanelProps {
   onClose?: () => void;
@@ -26,6 +28,8 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
   // I3: diff 应用规则为“勾选要撤销的修改”——拒绝的段落回退到旧版本，其余全部保留新版本。
   // 此前存在的 acceptedBlocks 仅为 UI 高亮、无业务作用，已移除以避免“需逐个点接受才保留”的误解。
   const [rejectedBlocks, setRejectedBlocks] = useState<Set<number>>(new Set());
+  // P-M8: modified 块的 charDiffs 按需展开，避免大文档字符级 diff spans 导致 DOM 膨胀
+  const [expandedBlocks, setExpandedBlocks] = useState<Set<number>>(new Set());
   const [versionName, setVersionName] = useState('');
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [isComputingDiff, setIsComputingDiff] = useState(false);
@@ -61,8 +65,16 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
         const htmlDiff = computeHtmlBlockDiff(selectedVersion.content, currentChapter.content);
         setHtmlDiffResult(htmlDiff);
         setRejectedBlocks(new Set());
-        // 记录计算 diff 时的内容快照，供 handleApplyChanges 校验是否过期
-        setDiffContentHash(`${currentChapter.content.length}:${currentChapter.content.slice(0, 64)}`);
+        setExpandedBlocks(new Set());
+        // 记录计算 diff 时的内容快照，供 handleApplyChanges 校验是否过期。
+        // 取 head+tail+length 三元组：仅取前 64 字符时，64 字符之后的修改无法检测，
+        // 会让基于过期 diff 的 applyHtmlDiffRejections 破坏内容。
+        // 取首尾各 256 字符 + 总长度，可覆盖 99% 的真实编辑场景（段首/段尾/中段插入），
+        // 同时避免对超大章节做完整 hash 的性能开销。
+        const snapshot = currentChapter.content;
+        setDiffContentHash(
+          `${snapshot.length}:${snapshot.slice(0, 256)}:${snapshot.slice(-256)}`
+        );
         setIsComputingDiff(false);
       }, 30);
       return () => {
@@ -76,8 +88,32 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
       setIsComputingDiff(false);
       setHtmlDiffResult([]);
       setRejectedBlocks(new Set());
+      setExpandedBlocks(new Set());
     }
   }, [selectedVersion, currentChapter]);
+
+  // 镜像 showSaveDialog 状态，供 Esc 监听器读取最新值（避免闭包陈旧）
+  const showSaveDialogRef = useRef(false);
+  useEffect(() => {
+    showSaveDialogRef.current = showSaveDialog;
+  }, [showSaveDialog]);
+
+  // Esc 关闭抽屉：内嵌保存对话框打开时优先关闭对话框，避免误关整个抽屉；
+  // IME 组合输入时忽略，避免中断中文输入。
+  useEffect(() => {
+    if (!onClose) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key !== 'Escape') return;
+      if (showSaveDialogRef.current) {
+        setShowSaveDialog(false);
+        return;
+      }
+      onClose();
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [onClose]);
 
   const handleSaveVersion = () => {
     if (!currentChapterId) return;
@@ -86,9 +122,9 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
     setVersionName('');
   };
 
-  const handleRestore = (version: ChapterVersion) => {
+  const handleRestore = async (version: ChapterVersion) => {
     if (!currentChapterId) return;
-    if (confirm('确定要恢复到此版本吗？当前内容将被覆盖。')) {
+    if (await confirm('确定要恢复到此版本吗？当前内容将被覆盖。')) {
       restoreVersion(currentChapterId, version.id);
       // 章节 ID 未变化，编辑器无法感知 store 内容被外部替换；通知编辑器强制刷新
       bumpContentEpoch();
@@ -109,9 +145,19 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
     });
   };
 
-  const handleDeleteVersion = (versionId: string) => {
+  // P-M8: 切换 modified 块的字符级差异展开状态
+  const toggleBlockExpand = (index: number) => {
+    setExpandedBlocks(prev => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  };
+
+  const handleDeleteVersion = async (versionId: string) => {
     if (!currentChapterId) return;
-    if (confirm('确定删除此历史版本吗？')) {
+    if (await confirm('确定删除此历史版本吗？')) {
       deleteVersion(currentChapterId, versionId);
     }
   };
@@ -136,7 +182,9 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
 
     // 校验 diff 是否过期：比对当前章节内容与计算 diff 时的快照 hash。
     // 若章节内容已被外部编辑（如编辑器内继续输入），基于旧 diff 应用会破坏内容。
-    const currentHash = `${currentChapter.content.length}:${currentChapter.content.slice(0, 64)}`;
+    // 取 head+tail+length 三元组，与 computeDiff 时一致。
+    const c = currentChapter.content;
+    const currentHash = `${c.length}:${c.slice(0, 256)}:${c.slice(-256)}`;
     if (currentHash !== diffContentHash) {
       alert('章节内容在计算差异后已发生变化，差异结果已过期。\n请重新选择版本以重新计算差异后再应用。');
       setSelectedVersion(null);
@@ -177,7 +225,7 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col" role="region" aria-label="版本历史">
       {/* Header */}
       <div className="p-3 border-b border-ink-800/50 flex items-center justify-between">
         <span className="text-sm font-medium text-ink-200 flex items-center gap-2">
@@ -189,15 +237,17 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
             onClick={() => setShowSaveDialog(true)}
             className="p-1.5 rounded text-ink-500 hover:text-amber-400 hover:bg-ink-800 transition-colors"
             title="保存当前版本"
+            aria-label="保存当前版本"
           >
-            <Save className="w-4 h-4" />
+            <Save className="w-4 h-4" aria-hidden="true" />
           </button>
           {onClose && (
             <button
               onClick={onClose}
               className="p-1.5 rounded text-ink-500 hover:text-ink-300 hover:bg-ink-800 transition-colors"
+              aria-label="关闭版本历史"
             >
-              <X className="w-4 h-4" />
+              <X className="w-4 h-4" aria-hidden="true" />
             </button>
           )}
         </div>
@@ -235,11 +285,12 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
       {!selectedVersion ? (
         <div className="flex-1 overflow-y-auto">
           {sortedVersions.length === 0 ? (
-            <div className="p-6 text-center">
-              <History className="w-8 h-8 text-ink-600 mx-auto mb-2" />
-              <p className="text-sm text-ink-500">暂无历史版本</p>
-              <p className="text-xs text-ink-600 mt-1">点击上方保存按钮创建快照</p>
-            </div>
+            <Empty
+              icon={<History className="w-8 h-8 text-ink-600" />}
+              title="暂无历史版本"
+              description="点击上方保存按钮创建快照"
+              className="p-6"
+            />
           ) : (
             <div className="p-2 space-y-1">
               {/* Current version indicator */}
@@ -277,8 +328,9 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
                       }}
                       className="p-1 rounded text-ink-500 hover:text-red-400 hover:bg-ink-700 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
                       title="删除此版本"
+                      aria-label="删除此版本"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                     </button>
                     <ChevronRight className="w-4 h-4 text-ink-600 group-hover:text-ink-400 flex-shrink-0" />
                   </div>
@@ -302,8 +354,9 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
             <button
               onClick={() => setSelectedVersion(null)}
               className="p-1 rounded text-ink-500 hover:text-ink-300 hover:bg-ink-800"
+              aria-label="返回版本列表"
             >
-              <ChevronRight className="w-4 h-4 rotate-180" />
+              <ChevronRight className="w-4 h-4 rotate-180" aria-hidden="true" />
             </button>
             <div className="flex-1 min-w-0">
               <div className="text-sm text-ink-200 truncate">
@@ -413,14 +466,16 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
                       )}
                       {block.type === 'modified' && block.charDiffs && (
                         <span className="text-red-300">
-                          {block.charDiffs.left.map((chunk, i) => (
-                            <span
-                              key={i}
-                              className={chunk.type === 'removed' ? 'bg-red-500/30 rounded px-0.5' : ''}
-                            >
-                              {chunk.content}
-                            </span>
-                          ))}
+                          {expandedBlocks.has(idx)
+                            ? block.charDiffs.left.map((chunk, i) => (
+                                <span
+                                  key={i}
+                                  className={chunk.type === 'removed' ? 'bg-red-500/30 rounded px-0.5' : ''}
+                                >
+                                  {chunk.content}
+                                </span>
+                              ))
+                            : block.leftBlock?.textContent}
                         </span>
                       )}
                     </span>
@@ -458,17 +513,31 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
                       )}
                       {block.type === 'modified' && block.charDiffs && (
                         <span className="text-emerald-300">
-                          {block.charDiffs.right.map((chunk, i) => (
-                            <span
-                              key={i}
-                              className={chunk.type === 'added' ? 'bg-emerald-500/30 rounded px-0.5' : ''}
-                            >
-                              {chunk.content}
-                            </span>
-                          ))}
+                          {expandedBlocks.has(idx)
+                            ? block.charDiffs.right.map((chunk, i) => (
+                                <span
+                                  key={i}
+                                  className={chunk.type === 'added' ? 'bg-emerald-500/30 rounded px-0.5' : ''}
+                                >
+                                  {chunk.content}
+                                </span>
+                              ))
+                            : block.rightBlock?.textContent}
                         </span>
                       )}
                     </span>
+                    {block.type === 'modified' && block.charDiffs && (
+                      <div className="flex items-center pr-1">
+                        <button
+                          onClick={() => toggleBlockExpand(idx)}
+                          className="p-0.5 rounded text-ink-500 hover:text-amber-400 hover:bg-ink-700"
+                          title={expandedBlocks.has(idx) ? '收起字符级差异' : '展开字符级差异'}
+                          aria-label={expandedBlocks.has(idx) ? '收起字符级差异' : '展开字符级差异'}
+                        >
+                          <ChevronRight className={`w-3 h-3 transition-transform ${expandedBlocks.has(idx) ? 'rotate-90' : ''}`} aria-hidden="true" />
+                        </button>
+                      </div>
+                    )}
                     {block.type !== 'unchanged' && (
                       <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 pr-1">
                         <button
@@ -479,8 +548,9 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
                               : 'text-ink-500 hover:text-red-400 hover:bg-ink-700'
                           }`}
                           title={rejectedBlocks.has(idx) ? '取消撤销' : '撤销此段落（回退到旧版本）'}
+                          aria-label="撤销此段落"
                         >
-                          <X className="w-3 h-3" />
+                          <X className="w-3 h-3" aria-hidden="true" />
                         </button>
                       </div>
                     )}
@@ -490,8 +560,9 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
                           onClick={() => handleLocateInEditor(block)}
                           className="p-0.5 rounded text-ink-500 hover:text-amber-400 hover:bg-ink-700"
                           title="在编辑器中定位此段落"
+                          aria-label="在编辑器中定位此段落"
                         >
-                          <MapPin className="w-3 h-3" />
+                          <MapPin className="w-3 h-3" aria-hidden="true" />
                         </button>
                       </div>
                     )}

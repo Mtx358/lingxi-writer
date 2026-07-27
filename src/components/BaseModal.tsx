@@ -1,6 +1,7 @@
-import { useEffect, useCallback, useRef, useId } from 'react';
+import { useEffect, useCallback, useId } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
+import { useFocusTrap } from '@/hooks/useFocusTrap';
 
 interface BaseModalProps {
   isOpen: boolean;
@@ -35,11 +36,11 @@ export function BaseModal({
   closeOnOverlayClick = true,
   closeOnEscape = true,
 }: BaseModalProps) {
-  const modalRef = useRef<HTMLDivElement>(null);
+  // useFocusTrap 接管焦点管理：打开时聚焦首个可聚焦元素、Tab 在模态内循环、关闭时恢复焦点。
+  // 与 Esc 关闭（handleKeyDown）配合满足 WCAG 2.1 SC 2.1.2（Esc 可退出，非键盘陷阱）。
+  const modalRef = useFocusTrap<HTMLDivElement>(isOpen);
   // 用 React 18 useId 生成唯一 ID，避免多模态间 id="modal-title" 冲突
   const titleId = useId();
-  // 记录打开前的 activeElement，关闭时恢复焦点
-  const previousActiveElement = useRef<HTMLElement | null>(null);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -52,7 +53,7 @@ export function BaseModal({
     [onClose, closeOnEscape]
   );
 
-  // body.overflow 引用计数 + 焦点管理（仅在 isOpen 切换时增减，避免依赖 handleKeyDown 导致重复抖动）
+  // body.overflow 引用计数（焦点管理由 useFocusTrap 负责，此处仅管滚动锁定）
   useEffect(() => {
     if (!isOpen) return;
 
@@ -62,20 +63,12 @@ export function BaseModal({
     modalOpenCount++;
     document.body.style.overflow = 'hidden';
 
-    previousActiveElement.current = document.activeElement as HTMLElement | null;
-    modalRef.current?.focus();
-
     return () => {
       modalOpenCount--;
       if (modalOpenCount <= 0) {
         modalOpenCount = 0;
         document.body.style.overflow = savedBodyOverflow;
       }
-      const prev = previousActiveElement.current;
-      if (prev && typeof prev.focus === 'function') {
-        prev.focus();
-      }
-      previousActiveElement.current = null;
     };
   }, [isOpen]);
 

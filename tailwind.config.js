@@ -10,12 +10,17 @@ export default {
           50: '#f6f5f2',
           100: '#e8e4dc',
           200: '#d4cfc4',
-          300: '#b5ae9e',
-          400: '#8b8577',
-          500: '#6b665a',
-          600: '#534e44',
-          700: '#403c34',
-          800: '#2c2a25',
+          300: '#c4beb0',
+          400: '#9b9588',
+          // 500/600 互换：上一轮将 ink-600 提亮到 #948e7e 后，
+          // 反而比 ink-500 (#8b8577) 更亮，导致梯度方向倒置（500 应亮于 600）。
+          // 互换后：ink-500=#948e7e (L≈0.272, 对比度≈5.27:1)，
+          //         ink-600=#8b8577 (L≈0.236, 对比度≈4.69:1)。
+          // 两者均 ≥ 4.5:1（WCAG AA），ΔL≈0.036（13% 相对差），梯度方向正确。
+          500: '#948e7e',
+          600: '#8b8577',
+          700: '#4a4640',
+          800: '#2a2825',
           900: '#1a1a1f',
           950: '#111114',
         },
@@ -68,7 +73,6 @@ export default {
         'slide-up': 'slide-up 0.3s ease-out',
         'slide-left': 'slide-left 0.3s ease-out',
         'slide-right': 'slide-right 0.3s ease-out',
-        'typewriter': 'typewriter 0.1s steps(1) forwards',
       },
       keyframes: {
         'pulse-soft': {

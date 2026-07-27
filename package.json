@@ -1,31 +1,43 @@
 {
-  "name": "chuangzuo-gongfang",
+  "name": "lingxi-writer",
   "private": true,
   "version": "1.0.0",
   "type": "module",
   "author": {
-    "name": "创作工坊",
-    "email": "support@chuangzuo.app"
+    "name": "灵犀写作助手",
+    "email": "support@lingxi-writer.app"
   },
-  "homepage": "https://chuangzuo.app",
-  "description": "创作工坊 - 人主导，AI辅助的专业写作软件",
-  "main": "electron/dist/main.js",
+  "homepage": "https://lingxi-writer.app",
+  "description": "灵犀写作助手 - 人主导，AI辅助的专业写作软件",
+  "main": "electron/dist/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "check": "tsc -b --noEmit",
-    "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron electron/dist/main.js\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "e2e": "playwright test",
+    "e2e:ui": "playwright test --ui",
+    "e2e:install": "playwright install chromium",
+    "audit:check": "npm audit --audit-level=high --omit=optional || true",
+    "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron electron/dist/main.cjs\"",
     "electron:build": "tsc -p tsconfig.electron.json && npm run build && electron-builder",
     "electron:build:win": "tsc -p tsconfig.electron.json && npm run build && electron-builder --win",
     "electron:build:mac": "tsc -p tsconfig.electron.json && npm run build && electron-builder --mac",
-    "electron:build:linux": "tsc -p tsconfig.electron.json && npm run build && electron-builder --linux"
+    "electron:build:linux": "tsc -p tsconfig.electron.json && npm run build && electron-builder --linux",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": "eslint --fix"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@pdf-lib/fontkit": "^1.1.1",
     "@tiptap/extension-color": "^3.27.4",
     "@tiptap/extension-focus": "^3.27.4",
     "@tiptap/extension-highlight": "^3.27.4",
@@ -37,7 +49,6 @@
     "@tiptap/pm": "^3.27.4",
     "@tiptap/react": "^3.27.4",
     "@tiptap/starter-kit": "^3.27.4",
-    "@types/dompurify": "^3.0.5",
     "clsx": "^2.1.1",
     "docx": "^9.7.1",
     "dompurify": "^3.4.12",
@@ -49,18 +60,23 @@
     "react-dom": "^18.3.1",
     "react-router-dom": "^7.3.0",
     "tailwind-merge": "^3.0.2",
-    "uuid": "^14.0.1",
     "zustand": "^5.0.3"
   },
   "devDependencies": {
-    "@eslint/js": "^9.25.0",
+    "@axe-core/playwright": "^4.12.1",
+    "@eslint/js": "^9.39.5",
+    "@playwright/test": "^1.61.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/electron": "^1.4.38",
     "@types/node": "^22.20.1",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
-    "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^4.4.1",
+    "@vitest/coverage-v8": "^3.2.7",
     "autoprefixer": "^10.4.21",
+    "axe-core": "^4.12.1",
     "babel-plugin-react-dev-locator": "^1.0.6",
     "concurrently": "^10.0.3",
     "cross-env": "^10.1.0",
@@ -70,17 +86,24 @@
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.19",
     "globals": "^16.0.0",
+    "husky": "^9.1.7",
+    "jsdom": "^25.0.1",
+    "lint-staged": "^17.2.0",
     "postcss": "^8.5.3",
     "tailwindcss": "^3.4.17",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.30.1",
     "vite": "^6.3.5",
     "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "^3.2.7",
     "wait-on": "^9.0.10"
   },
+  "overrides": {
+    "shell-quote": "^1.10.0"
+  },
   "build": {
-    "appId": "com.chuangzuo.gongfang",
-    "productName": "创作工坊",
+    "appId": "com.lingxi.writer",
+    "productName": "灵犀写作助手",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -90,9 +113,9 @@
       "electron/dist/**/*"
     ],
     "extraMetadata": {
-      "main": "electron/dist/main.js"
+      "main": "electron/dist/main.cjs"
     },
-    "icon": "build/icon.svg",
+    "icon": "build/icon.png",
     "win": {
       "target": [
         {
@@ -115,7 +138,7 @@
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "创作工坊"
+      "shortcutName": "灵犀写作助手"
     },
     "mac": {
       "target": [

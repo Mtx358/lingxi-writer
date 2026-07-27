@@ -1,8 +1,5 @@
 import DOMPurify from 'dompurify';
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
+import { escapeHtml } from '@/lib/htmlUtils';
 
 export interface ImportedChapter {
   title: string;
@@ -32,6 +29,10 @@ const DEFAULT_HEADING_MAPPING: HeadingMapping = {
 };
 
 export async function parseDocx(arrayBuffer: ArrayBuffer, mapping?: HeadingMapping): Promise<ImportResult> {
+  // 体积校验：防 docx zip bomb / XXE 触发主线程 OOM。50MB 上限足以容纳任何正常书籍稿件
+  if (arrayBuffer.byteLength > 50 * 1024 * 1024) {
+    throw new Error('DOCX 文件过大，请压缩或拆分后导入');
+  }
   const m: HeadingMapping = { ...DEFAULT_HEADING_MAPPING, ...(mapping || {}) };
   const chapters: ImportedChapter[] = [];
   let title = '导入项目';
@@ -162,7 +163,11 @@ export async function parseDocx(arrayBuffer: ArrayBuffer, mapping?: HeadingMappi
     flushChapter();
 
     if (chapters.length === 0) {
-      const text = html.replace(/<[^>]*>/g, '').trim();
+      // 用 DOMParser 的 textContent 提取纯文本，正确解码 HTML 实体（M5 修复）：
+      // 原实现 html.replace(/<[^>]*>/g, '') 仅剥离标签不解码实体，`&amp;` 保留为 `&amp;`，
+      // 随后 escapeHtml(l) 将 & 再次编码为 &amp;，导致 `&amp;` → `&amp;amp;`，用户看到 `&amp;` 而非 `&`。
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const text = (doc.body.textContent || '').trim();
       if (text) {
         chapters.push({
           title: '第一章',
@@ -174,9 +179,12 @@ export async function parseDocx(arrayBuffer: ArrayBuffer, mapping?: HeadingMappi
     }
   } catch (e) {
     console.error('Failed to parse DOCX:', e);
+    // 清空部分解析结果再 push 失败占位，避免用户看到"章节1 + 章节2 + 导入失败"混合列表
+    // 难以判断哪些是有效数据；统一以失败占位返回，让用户明确知道此次导入无效
+    chapters.length = 0;
     chapters.push({
       title: '导入失败',
-      content: '<p>无法解析文档，请尝试其他格式</p>',
+      content: '<p>无法解析文档，请尝试其他格式（如 .txt / .md）</p>',
       level: 2,
       order: 0,
     });
@@ -359,18 +367,20 @@ export function parsePlainText(text: string): ImportResult {
   };
 
   const flushChapter = () => {
-    if (currentTitle && currentContent.length > 0) {
-      const contentHtml = currentContent
-        .filter(l => l.trim())
-        .map(l => `<p>${escapeHtml(l.trim())}</p>`)
-        .join('\n');
-      chapters.push({
-        title: currentTitle,
-        content: contentHtml,
-        level: 2,
-        order: order++,
-      });
-    }
+    if (currentContent.length === 0) return;
+    const contentHtml = currentContent
+      .filter(l => l.trim())
+      .map(l => `<p>${escapeHtml(l.trim())}</p>`)
+      .join('\n');
+    if (!contentHtml) return;
+    chapters.push({
+      // currentTitle 为空时（首个章节标题前的前言内容）作为"序言"章节保留（M6 修复）：
+      // 原实现 if (currentTitle && ...) 在 currentTitle 为空时跳过，前言被丢弃
+      title: currentTitle || '序言',
+      content: contentHtml,
+      level: 2,
+      order: order++,
+    });
   };
 
   for (const line of lines) {
@@ -378,7 +388,9 @@ export function parsePlainText(text: string): ImportResult {
       flushChapter();
       currentTitle = line.trim();
       currentContent = [];
-    } else if (currentTitle) {
+    } else {
+      // 所有非章节标题行都攒入 currentContent（M6 修复）：
+      // 原实现 else if (currentTitle) 在首个章节标题前不满足，前言被丢弃
       currentContent.push(line);
     }
   }

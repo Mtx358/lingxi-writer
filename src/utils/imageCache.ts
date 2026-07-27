@@ -10,6 +10,7 @@
  * - 错误缓存带 TTL，避免对损坏文件反复触发 IO；过期后允许重试（用户可能已修复）
  */
 import { IMAGE_CACHE_MAX_ENTRIES, IMAGE_ERROR_CACHE_TTL_MS } from '@/constants/config';
+import { registerProjectCleanup } from '@/store/projectCleanup';
 
 const imageDataUrlCache = new Map<string, Promise<string>>();
 const imageDataUrlErrors = new Map<string, number>();
@@ -77,3 +78,7 @@ export function clearImageCache(path?: string): void {
     imageDataUrlCache.clear();
   }
 }
+
+// 项目切换时自动清理图片缓存（成功 + 错误），避免上一项目 dataURL 残留
+registerProjectCleanup(() => clearImageCache());
+registerProjectCleanup(() => clearImageErrorCache());

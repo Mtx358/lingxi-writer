@@ -58,11 +58,12 @@ export function useGlobalHotkeys(hotkeys: HotkeyHandler[]) {
 }
 
 /**
- * 应用级快捷键：Ctrl+S 保存快照 + 调用方传入的额外快捷键（如 Ctrl+K 打开搜索）。
+ * 应用级快捷键：Ctrl+S 保存快照 + 落盘 + 调用方传入的额外快捷键（如 Ctrl+K 打开搜索）。
  * extraHotkeys 建议使用 useMemo 稳定引用，避免每次渲染重建监听器。
  */
 export function useAppHotkeys(extraHotkeys: HotkeyHandler[] = []) {
   const saveVersion = useAppStore(s => s.saveVersion);
+  const saveProject = useAppStore(s => s.saveProject);
   const currentChapterId = useAppStore(s => s.currentChapterId);
 
   // 用 useMemo 稳定 hotkeys 数组引用，避免每次渲染重建数组导致
@@ -72,14 +73,18 @@ export function useAppHotkeys(extraHotkeys: HotkeyHandler[] = []) {
       key: 's',
       ctrl: true,
       handler: () => {
+        // Ctrl+S 双重语义：先创建版本快照（供 undo/redo 与版本历史面板使用），
+        // 再落盘到 storage（原实现仅 saveVersion 不落盘，用户按 Ctrl+S 后误以为已保存，
+        // 实际刷新页面会丢失编辑）。saveProject 内部有 isSaving 互斥，频繁按 Ctrl+S 不会重复落盘。
         if (currentChapterId) {
           saveVersion(currentChapterId, '手动保存快照');
         }
+        void saveProject();
       },
-      description: '保存快照 (Ctrl+S)',
+      description: '保存快照并落盘 (Ctrl+S)',
     },
     ...extraHotkeys,
-  ], [saveVersion, currentChapterId, extraHotkeys]);
+  ], [saveVersion, saveProject, currentChapterId, extraHotkeys]);
 
   useGlobalHotkeys(hotkeys);
 }

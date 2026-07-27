@@ -1,8 +1,11 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { AlertTriangle, CheckCircle, X, ChevronRight, Info, AlertCircle, XCircle, Locate } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { conflictDetector } from '@/utils/conflictDetector';
-import type { ConflictIssue } from '@/types';
+import { toast } from '@/hooks/useToast';
+import { getErrorMessage } from '@/lib/errorUtils';
+import type { ConflictIssue, Chapter } from '@/types';
+import Empty from '@/components/Empty';
 
 interface ConflictPanelProps {
   onClose?: () => void;
@@ -54,6 +57,17 @@ export default function ConflictPanel({ onClose }: ConflictPanelProps) {
     return () => { mountedRef.current = false; };
   }, []);
 
+  // Esc 关闭抽屉（IME 组合输入时忽略，避免中断中文输入）
+  useEffect(() => {
+    if (!onClose) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [onClose]);
+
   const handleScan = async () => {
     if (!currentChapter) return;
     setScanning(true);
@@ -72,6 +86,11 @@ export default function ConflictPanel({ onClose }: ConflictPanelProps) {
           ...issues,
         ],
       }));
+    } catch (e) {
+      // 补 catch：detectChapterConflicts 抛错时给用户明确反馈，避免只看到 spinner 停止无提示
+      if (mountedRef.current) {
+        toast.error('冲突扫描失败', getErrorMessage(e));
+      }
     } finally {
       if (mountedRef.current) setScanning(false);
     }
@@ -83,6 +102,11 @@ export default function ConflictPanel({ onClose }: ConflictPanelProps) {
       await new Promise(resolve => setTimeout(resolve, 1200));
       if (!mountedRef.current) return;
       detectConflicts();
+    } catch (e) {
+      // 补 catch：detectConflicts 抛错时给用户明确反馈，避免只看到 spinner 停止无提示
+      if (mountedRef.current) {
+        toast.error('冲突扫描失败', getErrorMessage(e));
+      }
     } finally {
       if (mountedRef.current) setScanning(false);
     }
@@ -94,13 +118,21 @@ export default function ConflictPanel({ onClose }: ConflictPanelProps) {
 
   const handleFix = (issue: ConflictIssue) => {
     // 当前为模板建议，未接入真实 AI 修复。文案明确为"查看修复建议模板"避免误导。
+    // issue.description / issue.suggestion 源自 conflictDetector 对章节正文的分析，
+    // 可能携带章节内的 HTML 特殊字符（如 < > & <script>）。拼接 HTML 前必须转义，
+    // 避免 AIPanel 用 dangerouslySetInnerHTML 渲染时 XSS 或 SafeHtml sanitize 后内容残缺
+    const esc = (s: string) => s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
     addAISuggestion({
       type: 'fix',
       title: `修复建议模板：${issue.description.slice(0, 20)}...`,
       content: `<p>修复建议模板（非真实 AI 修复）：</p>
-<p>针对"${issue.description}"的问题，建议如下：</p>
+<p>针对"${esc(issue.description)}"的问题，建议如下：</p>
 <ul>
-<li>${issue.suggestion}</li>
+<li>${esc(issue.suggestion)}</li>
 <li>检查上下文，确保叙事视角一致</li>
 <li>统一相关术语和称谓</li>
 </ul>`,
@@ -109,12 +141,30 @@ export default function ConflictPanel({ onClose }: ConflictPanelProps) {
     });
   };
 
-  const unresolvedCount = conflicts.filter(i => !i.resolved).length;
-  const errorCount = conflicts.filter(i => i.severity === 'error' && !i.resolved).length;
-  const warningCount = conflicts.filter(i => i.severity === 'warning' && !i.resolved).length;
+  // P-M2 修复：3 个 filter 合并为单次 reduce，避免对 conflicts 数组遍历 3 次
+  const { unresolvedCount, errorCount, warningCount } = useMemo(() => {
+    let unresolved = 0;
+    let error = 0;
+    let warning = 0;
+    for (const i of conflicts) {
+      if (i.resolved) continue;
+      unresolved++;
+      if (i.severity === 'error') error++;
+      else if (i.severity === 'warning') warning++;
+    }
+    return { unresolvedCount: unresolved, errorCount: error, warningCount: warning };
+  }, [conflicts]);
+
+  // P-M2 修复：预构建 chapterId → Chapter 的 Map，避免 issues.map 内每个 issue
+  // 都对 chapters 数组做一次 O(n) find（m 个 issue × n 个 chapter → O(m×n)）
+  const chapterMap = useMemo(() => {
+    const m = new Map<string, Chapter>();
+    for (const c of chapters) m.set(c.id, c);
+    return m;
+  }, [chapters]);
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col" role="region" aria-label="冲突检测">
       {/* Header */}
       <div className="p-3 border-b border-ink-800/50 flex items-center justify-between">
         <span className="text-sm font-medium text-ink-200 flex items-center gap-2">
@@ -132,15 +182,17 @@ export default function ConflictPanel({ onClose }: ConflictPanelProps) {
             disabled={scanning}
             className="p-1.5 rounded text-ink-500 hover:text-ink-300 hover:bg-ink-800 transition-colors disabled:opacity-50"
             title="扫描全书"
+            aria-label="扫描全书"
           >
-            <CheckCircle className="w-4 h-4" />
+            <CheckCircle className="w-4 h-4" aria-hidden="true" />
           </button>
           {onClose && (
             <button
               onClick={onClose}
               className="p-1.5 rounded text-ink-500 hover:text-ink-300 hover:bg-ink-800 transition-colors"
+              aria-label="关闭冲突检测"
             >
-              <X className="w-4 h-4" />
+              <X className="w-4 h-4" aria-hidden="true" />
             </button>
           )}
         </div>
@@ -184,13 +236,14 @@ export default function ConflictPanel({ onClose }: ConflictPanelProps) {
       {/* Issues List */}
       <div className="flex-1 overflow-y-auto">
         {conflicts.length === 0 && !scanning ? (
-          <div className="p-6 text-center">
-            <CheckCircle className="w-8 h-8 text-emerald-500/50 mx-auto mb-2" />
-            <p className="text-sm text-ink-500">暂无检测到的问题</p>
-            <p className="text-xs text-ink-600 mt-1">点击上方按钮开始扫描</p>
-          </div>
+          <Empty
+            icon={<CheckCircle className="w-8 h-8 text-emerald-500/50" />}
+            title="暂无检测到的问题"
+            description="点击上方按钮开始扫描"
+            className="p-6"
+          />
         ) : scanning ? (
-          <div className="p-6 text-center">
+          <div className="p-6 text-center" role="status" aria-live="polite">
             <div className="w-8 h-8 border-2 border-amber-400/30 border-t-amber-400 rounded-full animate-spin mx-auto mb-2" />
             <p className="text-sm text-ink-400">AI 分析中...</p>
           </div>
@@ -200,7 +253,7 @@ export default function ConflictPanel({ onClose }: ConflictPanelProps) {
               const config = SEVERITY_CONFIG[issue.severity];
               const Icon = config.icon;
               const isExpanded = expandedId === issue.id;
-              const chapter = chapters.find(c => c.id === issue.chapterId);
+              const chapter = issue.chapterId ? chapterMap.get(issue.chapterId) : undefined;
 
               return (
                 <div

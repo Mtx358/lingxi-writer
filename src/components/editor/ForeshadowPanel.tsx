@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Plus, Flag, AlertCircle, CheckCircle2, Clock, XCircle, ChevronRight } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { FORESHADOW_STATUS_LABELS, FORESHADOW_STATUSES, DEFAULT_FORESHADOW_STATUS } from '@/types';
 import type { Foreshadow } from '@/types';
 import { FORESHADOW_STALE_THRESHOLD } from '@/constants/config';
+import Empty from '@/components/Empty';
 
 const STATUS_CONFIG: Record<Foreshadow['status'], { icon: typeof Flag; color: string; bgColor: string }> = {
   planted: { icon: Flag, color: 'text-amber-400', bgColor: 'bg-amber-400/10' },
@@ -28,17 +29,18 @@ export default function ForeshadowPanel() {
     setShowAdd(false);
   };
 
-  const filteredForeshadows = filter === 'all'
-    ? foreshadows
-    : foreshadows.filter(f => f.status === filter);
-
-  const statusCounts = {
-    all: foreshadows.length,
-    planted: foreshadows.filter(f => f.status === 'planted').length,
-    progressing: foreshadows.filter(f => f.status === 'progressing').length,
-    'paid-off': foreshadows.filter(f => f.status === 'paid-off').length,
-    abandoned: foreshadows.filter(f => f.status === 'abandoned').length,
-  };
+  // H6 性能修复：useMemo 避免每次 render 重算 filter + 5 次 statusCounts filter（O(6F) per render）
+  const { filteredForeshadows, statusCounts } = useMemo(() => {
+    const filtered = filter === 'all'
+      ? foreshadows
+      : foreshadows.filter(f => f.status === filter);
+    // 单次循环累加而非 5 次 filter
+    const counts = { all: foreshadows.length, planted: 0, progressing: 0, 'paid-off': 0, abandoned: 0 };
+    for (const f of foreshadows) {
+      if (f.status in counts) (counts as Record<string, number>)[f.status]++;
+    }
+    return { filteredForeshadows: filtered, statusCounts: counts };
+  }, [foreshadows, filter]);
 
   const cycleStatus = (id: string, current: Foreshadow['status']) => {
     const nextIndex = (FORESHADOW_STATUSES.indexOf(current) + 1) % FORESHADOW_STATUSES.length;
@@ -51,9 +53,10 @@ export default function ForeshadowPanel() {
         <span className="text-sm font-medium text-ink-200">伏笔看板</span>
         <button
           onClick={() => setShowAdd(true)}
+          aria-label="新建伏笔"
           className="p-1 rounded text-ink-500 hover:text-amber-400 hover:bg-ink-800 transition-colors"
         >
-          <Plus className="w-4 h-4" />
+          <Plus className="w-4 h-4" aria-hidden="true" />
         </button>
       </div>
 
@@ -111,10 +114,11 @@ export default function ForeshadowPanel() {
 
       <div className="flex-1 overflow-y-auto p-2 space-y-2">
         {filteredForeshadows.length === 0 ? (
-          <div className="p-6 text-center">
-            <Flag className="w-8 h-8 text-ink-600 mx-auto mb-2" />
-            <p className="text-sm text-ink-500">暂无伏笔</p>
-          </div>
+          <Empty
+            icon={<Flag className="w-8 h-8 text-ink-600" />}
+            title="暂无伏笔"
+            className="p-6"
+          />
         ) : (
           filteredForeshadows.map(f => {
             const config = STATUS_CONFIG[f.status];
@@ -125,6 +129,11 @@ export default function ForeshadowPanel() {
             return (
               <div
                 key={f.id}
+                role="button"
+                tabIndex={0}
+                aria-expanded={isExpanded}
+                aria-controls={`foreshadow-panel-${f.id}`}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpandedId(isExpanded ? null : f.id); } }}
                 className={`card p-2.5 cursor-pointer transition-all ${
                   isWarning ? 'border-amber-500/30' : ''
                 }`}
@@ -135,6 +144,7 @@ export default function ForeshadowPanel() {
                     onClick={(e) => { e.stopPropagation(); cycleStatus(f.id, f.status); }}
                     className={`w-6 h-6 rounded flex-shrink-0 flex items-center justify-center ${config.bgColor}`}
                     title={`点击切换状态：${FORESHADOW_STATUS_LABELS[f.status]}`}
+                    aria-label={`切换伏笔状态，当前${FORESHADOW_STATUS_LABELS[f.status]}`}
                   >
                     <config.icon className={`w-3.5 h-3.5 ${config.color}`} />
                   </button>
@@ -155,15 +165,19 @@ export default function ForeshadowPanel() {
                   }`} />
                 </div>
 
-                {isExpanded && f.description && (
-                  <div className="mt-2 pt-2 border-t border-ink-700/50 text-xs text-ink-400 leading-relaxed animate-slide-down">
-                    {f.description}
-                  </div>
-                )}
+                {isExpanded && (
+                  <div id={`foreshadow-panel-${f.id}`} role="region" aria-label={`${f.title}详情`}>
+                    {f.description && (
+                      <div className="mt-2 pt-2 border-t border-ink-700/50 text-xs text-ink-400 leading-relaxed animate-slide-down">
+                        {f.description}
+                      </div>
+                    )}
 
-                {isExpanded && f.notes && (
-                  <div className="mt-2 p-2 bg-ink-800/50 rounded text-[11px] text-ink-400">
-                    <span className="text-ink-500">备注：</span>{f.notes}
+                    {f.notes && (
+                      <div className="mt-2 p-2 bg-ink-800/50 rounded text-[11px] text-ink-400">
+                        <span className="text-ink-500">备注：</span>{f.notes}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

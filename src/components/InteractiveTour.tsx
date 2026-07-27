@@ -1,5 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { ChevronLeft, ChevronRight, X, SkipForward } from 'lucide-react';
+import { pushOverlay, popOverlay } from '@/utils/overlayState';
+import { useFocusTrap } from '@/hooks/useFocusTrap';
 
 export interface TourStep {
   selector: string;
@@ -36,6 +38,8 @@ export default function InteractiveTour({ steps, onComplete, onSkip }: Interacti
   const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number } | null>(null);
   const [arrowStyle, setArrowStyle] = useState<React.CSSProperties>({ display: 'none' });
   const completedRef = useRef(false);
+  // 焦点陷阱：组件挂载即代表引导显示，锁定 Tab 在模态内循环
+  const dialogRef = useFocusTrap<HTMLDivElement>(true);
 
   const resolveAndLayout = useCallback(() => {
     if (steps.length === 0) {
@@ -142,6 +146,25 @@ export default function InteractiveTour({ steps, onComplete, onSkip }: Interacti
     };
   }, [resolveAndLayout]);
 
+  // 注册浮层（屏蔽全局快捷键 Ctrl+S/K 等），卸载时释放
+  useEffect(() => {
+    pushOverlay();
+    return () => popOverlay();
+  }, []);
+
+  // Esc 跳过引导（IME 组合输入时忽略；completedRef 守卫防止重复触发）
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Escape' && !completedRef.current) {
+        completedRef.current = true;
+        onSkip();
+      }
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [onSkip]);
+
   const handleNext = () => {
     if (resolvedIndex >= steps.length - 1) {
       if (!completedRef.current) {
@@ -172,7 +195,7 @@ export default function InteractiveTour({ steps, onComplete, onSkip }: Interacti
   const isLast = resolvedIndex === steps.length - 1;
 
   return (
-    <div className="fixed inset-0 z-[200]">
+    <div ref={dialogRef} className="fixed inset-0 z-[200]" role="dialog" aria-modal="true" aria-label="功能引导">
       {/* Highlight hole with dimming overlay via box-shadow */}
       {targetRect && (
         <div
@@ -207,8 +230,9 @@ export default function InteractiveTour({ steps, onComplete, onSkip }: Interacti
                 onClick={handleSkip}
                 className="p-0.5 rounded text-ink-500 hover:text-ink-300 hover:bg-ink-800 transition-colors"
                 title="跳过引导"
+                aria-label="跳过引导"
               >
-                <X className="w-3.5 h-3.5" />
+                <X className="w-3.5 h-3.5" aria-hidden="true" />
               </button>
             </div>
 

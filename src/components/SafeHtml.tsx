@@ -16,7 +16,12 @@ const ALLOWED_TAGS = [
 
 const ALLOWED_ATTR = ['href', 'class', 'target', 'rel', 'data-reference-type', 'data-reference-id'];
 
-const ALLOWED_URI_REGEXP = /^(?:(?:https?|mailto|tel):|[^:]*)$/i;
+// 允许的 URI 协议白名单（用于 href/src 等 URI 属性过滤）。
+// 修复原正则 bug：`^(?:(?:https?|mailto|tel):|[^:]*)$/i` 因 `$` 锚点紧随 scheme 后，
+// 实际只匹配 `https:` 这种"冒号即结尾"的字符串，导致 `https://example.com` 被误判为非法而
+// 整个 href 被剥离。新正则：scheme 后允许任意字符 `.*`，或无冒号的相对路径/锚点。
+// 仍然拦截 javascript:/vbscript:/data: 等危险协议（不在 scheme 白名单中）。
+const ALLOWED_URI_REGEXP = /^(?:(?:https?|mailto|tel):.*|[^:]*)$/i;
 
 let hookRegistered = false;
 function ensureHook() {

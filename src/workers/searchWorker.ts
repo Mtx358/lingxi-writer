@@ -3,7 +3,7 @@
  * 解决百章以上规模作品搜索时主线程卡顿的问题
  */
 
-interface SearchParams {
+export interface SearchParams {
   query: string;
   chapters: Array<{ id: string; title: string; content: string; summary: string }>;
   characters: Array<{ id: string; name: string; profile: Record<string, unknown> }>;
@@ -12,7 +12,7 @@ interface SearchParams {
   materials: Array<{ id: string; title: string; content: string }>;
 }
 
-interface SearchResult {
+export interface SearchResult {
   type: string;
   id: string;
   title: string;
@@ -21,20 +21,57 @@ interface SearchResult {
 }
 
 // 转义正则元字符，防止用户输入触发 SyntaxError
+// 注：刻意保留独立副本而非 import @/lib/regexUtils——Worker 运行在隔离上下文，
+// 引入主线程模块会拉入额外依赖、增大 Worker 打包体积；此处单行实现零依赖更合适
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function executeSearch(params: SearchParams): SearchResult[] {
+// H2 性能修复：Worker 内缓存章节纯文本与角色 profile 字符串，避免每次搜索重复去 HTML + JSON.stringify
+// 主线程的 chapterPlainTextCache / profileSearchCache 仅存在于主线程，Worker 内需独立维护
+const workerChapterCache = new Map<string, { content: string; plain: string }>();
+const workerProfileCache = new Map<string, { profileRef: unknown; str: string }>();
+
+const getChapterPlain = (id: string, content: string): string => {
+  const cached = workerChapterCache.get(id);
+  if (cached && cached.content === content) return cached.plain;
+  const plain = (content || '').replace(/<[^>]*>/g, '');
+  workerChapterCache.set(id, { content, plain });
+  return plain;
+};
+
+const getProfileStr = (id: string, profile: unknown): string => {
+  const cached = workerProfileCache.get(id);
+  if (cached && cached.profileRef === profile) return cached.str;
+  const str = JSON.stringify(profile).toLowerCase();
+  workerProfileCache.set(id, { profileRef: profile, str });
+  return str;
+};
+
+// 清理已删除实体的缓存条目，避免缓存无限增长
+const pruneCaches = (chapters: SearchParams['chapters'], characters: SearchParams['characters']) => {
+  const chapterIds = new Set(chapters.map(c => c.id));
+  const charIds = new Set(characters.map(c => c.id));
+  for (const id of workerChapterCache.keys()) {
+    if (!chapterIds.has(id)) workerChapterCache.delete(id);
+  }
+  for (const id of workerProfileCache.keys()) {
+    if (!charIds.has(id)) workerProfileCache.delete(id);
+  }
+};
+
+export function executeSearch(params: SearchParams): SearchResult[] {
   const { query, chapters, characters, settingItems, foreshadows, materials } = params;
   if (!query.trim()) return [];
+
+  pruneCaches(chapters, characters);
 
   const results: SearchResult[] = [];
   const lowerQuery = query.toLowerCase();
   const safePattern = new RegExp(escapeRegExp(lowerQuery), 'gi');
 
   chapters.forEach(c => {
-    const plainContent = c.content.replace(/<[^>]*>/g, '');
+    const plainContent = getChapterPlain(c.id, c.content);
     const titleMatches = (c.title.toLowerCase().match(safePattern) || []).length;
     const contentMatches = (plainContent.toLowerCase().match(safePattern) || []).length;
     const totalMatches = titleMatches * 3 + contentMatches;
@@ -49,7 +86,7 @@ function executeSearch(params: SearchParams): SearchResult[] {
 
   characters.forEach(c => {
     const nameMatches = (c.name.toLowerCase().match(safePattern) || []).length;
-    const profileStr = JSON.stringify(c.profile).toLowerCase();
+    const profileStr = getProfileStr(c.id, c.profile);
     const profileMatches = (profileStr.match(safePattern) || []).length;
     const totalMatches = nameMatches * 5 + profileMatches;
     if (totalMatches > 0) {
@@ -94,7 +131,21 @@ function executeSearch(params: SearchParams): SearchResult[] {
   return results;
 }
 
-self.onmessage = (e: MessageEvent<SearchParams>) => {
-  const results = executeSearch(e.data);
-  (self as unknown as Worker).postMessage(results);
+self.onmessage = (e: MessageEvent<SearchParams & { requestId: number }>) => {
+  try {
+    // 拆出 requestId 后再将剩余参数交给 executeSearch，避免 requestId 污染搜索逻辑
+    const { requestId, ...params } = e.data;
+    const results = executeSearch(params);
+    // 回传 requestId：主线程据此丢弃过期请求的结果，避免并发搜索时错配响应
+    (self as unknown as Worker).postMessage({ requestId, results });
+  } catch (err) {
+    // Worker 内未捕获异常会让 Worker 卡死，主线程无超时机制。
+    // 捕获后回传 error（携带 requestId），主线程可据此降级到主线程搜索
+    const { requestId } = e.data;
+    console.error('searchWorker executeSearch failed:', err);
+    (self as unknown as Worker).postMessage({
+      requestId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 };

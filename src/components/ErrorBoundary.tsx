@@ -1,4 +1,5 @@
 import { Component, ErrorInfo, ReactNode } from 'react';
+import { logError } from '@/utils/rendererLogger';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -28,7 +29,10 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    // 保留 console.error（开发期 devtools 可见），同时转发主进程落盘
+    // （生产期用户无 devtools，React 边界捕获的异常必须落盘便于报障定位）
     console.error('ErrorBoundary caught:', error, errorInfo);
+    logError('React ErrorBoundary caught', error, { componentStack: errorInfo?.componentStack });
     this.props.onError?.(error, errorInfo);
   }
 

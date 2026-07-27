@@ -4,15 +4,22 @@ import DOMPurify from 'dompurify';
 import { aiService, type StreamHandler } from '@/utils/aiService';
 import { useAppStore } from '@/store/useAppStore';
 import { toast } from '@/hooks/useToast';
+import { getErrorMessage } from '@/lib/errorUtils';
 import { AI_STREAM_THROTTLE_MS, AI_CONTEXT_CONTINUATION_CHARS } from '@/constants/config';
 import type { Chapter } from '@/types';
 
 // AI 生成内容统一消毒入口：允许富文本标签但移除 script/事件处理器等危险节点
 // 导出供 TiptapEditor 的 pendingEditorInsert 插入路径复用，确保所有 AI 内容走同一消毒逻辑
+//
+// 安全说明：ALLOWED_ATTR 不含 'style'。DOMPurify 3.x 默认不剥离 style 中的
+// `expression(...)` 与 `url(javascript:...)`（IE-only 攻击向量，现代浏览器不执行），
+// 为防御纵深与最小权限原则，统一禁止 inline style：AI 生成内容只需语义标签
+// （p/h1-h6/strong/em/u/s/ul/ol/li/blockquote/pre/code/a），样式由编辑器主题统一控制。
+// 同时 ALLOWED_ATTR 也不含 'color'（<font color> 已废弃，同样无必要）。
 export const sanitizeAiHtml = (html: string): string =>
   DOMPurify.sanitize(html, {
     ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 's', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'a', 'span', 'div', 'hr'],
-    ALLOWED_ATTR: ['href', 'target', 'rel', 'class', 'style', 'color'],
+    ALLOWED_ATTR: ['href', 'target', 'rel', 'class'],
   });
 
 interface UseEditorAIOptions {
@@ -60,6 +67,17 @@ export function useEditorAI({
   const generatingChapterIdRef = useRef<string | null>(null);
   // 润色选区缓存，避免流过程中光标移动导致错位
   const selectionRangeRef = useRef<{ from: number; to: number } | null>(null);
+  // 标记本次生成是否在 onError 中终止：用于 await 后决定是否 saveVersion
+  // - handlePolish 的 onError 不修改编辑器，await 后 saveVersion 会保存未变化版本（标签误导），应跳过
+  // - handleContinue 的 onError 已 flush 部分内容，saveVersion 标签需说明是失败的续写
+  const errorOccurredRef = useRef(false);
+  // 标记本次生成是否被主动中止（abortGeneration / 章节切换 / 卸载）。
+  // 用独立布尔而非 abortControllerRef.current?.signal.aborted 的原因：
+  //   abortGeneration 调用 .abort() 后立即将 abortControllerRef.current 置 null，
+  //   导致 await 后再读 abortControllerRef.current?.signal.aborted 得到 undefined（falsy），
+  //   abort 检测失效，saveVersion 仍被调用。wasAbortedRef 在 abortGeneration 中置 true，
+  //   不依赖 abortControllerRef 生命周期，保证 await 后仍能正确判断。
+  const wasAbortedRef = useRef(false);
 
   useEffect(() => { isGeneratingRef.current = isGenerating; }, [isGenerating, isGeneratingRef]);
 
@@ -80,6 +98,8 @@ export function useEditorAI({
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
+      // 标记主动中止：handleContinue/handlePolish 的 await 后据此跳过 saveVersion
+      wasAbortedRef.current = true;
     }
     if (continueFlushTimerRef.current) {
       clearTimeout(continueFlushTimerRef.current);
@@ -98,6 +118,10 @@ export function useEditorAI({
   const handleContinue = useCallback(async () => {
     if (!editor || !currentChapterId || !currentChapter || isGenerating) return;
 
+    // 每次生成都重置错误标记：onError 会将其置 true，await 后据此判断是否 saveVersion
+    errorOccurredRef.current = false;
+    // 重置中止标记：本次生成刚开始，尚未被 abort
+    wasAbortedRef.current = false;
     abortControllerRef.current = new AbortController();
     generatingChapterIdRef.current = currentChapterId;
     setIsGenerating(true);
@@ -117,6 +141,8 @@ export function useEditorAI({
           // 防串章：若生成期间章节已被切换则中止
           if (generatingChapterIdRef.current !== currentChapterIdRef.current) {
             abortControllerRef.current?.abort();
+            // 与 abortGeneration 保持一致：标记主动中止，await 后跳过 saveVersion
+            wasAbortedRef.current = true;
             return;
           }
           // 节流：chunk 先攒入 buffer，由定时器按 AI_STREAM_THROTTLE_MS 间隔 flush，
@@ -173,6 +199,8 @@ export function useEditorAI({
         onError: (error: Error) => {
           console.error('AI stream error:', error);
           toast.error('AI 续写失败', error.message || '请检查网络或 API 配置');
+          // 标记本次生成出错，await 后据此区分 saveVersion 标签
+          errorOccurredRef.current = true;
           // 清理节流 timer 与残留 buffer，避免脏数据后续写入
           if (continueFlushTimerRef.current) {
             clearTimeout(continueFlushTimerRef.current);
@@ -196,21 +224,27 @@ export function useEditorAI({
         abortControllerRef.current.signal
       );
 
-      if (abortControllerRef.current?.signal.aborted) {
+      if (wasAbortedRef.current) {
         // 用户取消，不保存版本
         return;
       }
 
-      saveVersion(currentChapterId, 'AI 续写');
+      // 出错时已 flush 部分内容到编辑器，仍需 saveVersion 保留可回退版本，
+      // 但标签需明确说明是失败的部分续写，避免用户误以为是完整 AI 续写
+      if (errorOccurredRef.current) {
+        saveVersion(currentChapterId, 'AI 续写（失败，已保留部分）');
+      } else {
+        saveVersion(currentChapterId, 'AI 续写');
+      }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = getErrorMessage(e);
       console.error('AI continue error:', e);
       toast.error('AI 续写失败', msg);
     } finally {
       // 卸载后不再 setState；非主动中止且编辑器未销毁时才恢复可编辑状态
       // 不能在 finally 中 return（no-unsafe-finally），改用条件包裹
       if (mountedRef.current) {
-        if (!abortControllerRef.current?.signal.aborted && !editor.isDestroyed) {
+        if (!wasAbortedRef.current && !editor.isDestroyed) {
           editor.setEditable(true);
         }
         setIsGenerating(false);
@@ -222,8 +256,12 @@ export function useEditorAI({
   }, [editor, currentChapterId, currentChapter, saveVersion, isGenerating, setAIGenerating, currentChapterIdRef]);
 
   const handlePolish = useCallback(async () => {
-    if (!editor || !currentChapterId || isGenerating) return;
+    if (!editor || !currentChapterId || !currentChapter || isGenerating) return;
 
+    // 每次生成都重置错误标记：onError 会将其置 true，await 后据此判断是否 saveVersion
+    errorOccurredRef.current = false;
+    // 重置中止标记：本次生成刚开始，尚未被 abort
+    wasAbortedRef.current = false;
     abortControllerRef.current = new AbortController();
     generatingChapterIdRef.current = currentChapterId;
     setIsGenerating(true);
@@ -255,6 +293,8 @@ export function useEditorAI({
           if (!editor || editor.isDestroyed) return;
           if (generatingChapterIdRef.current !== currentChapterIdRef.current) {
             abortControllerRef.current?.abort();
+            // 与 abortGeneration 保持一致：标记主动中止，await 后跳过 saveVersion
+            wasAbortedRef.current = true;
             return;
           }
           // 流式阶段仅缓存内容，不操作编辑器，避免选区错位和频繁重绘
@@ -262,6 +302,13 @@ export function useEditorAI({
         },
         onComplete: () => {
           if (!editor || editor.isDestroyed) return;
+          // S2 兜底校验：章节已切换则丢弃残留 buffer，避免把旧章节的润色结果写到新章节
+          // （与 handleContinue 的 onComplete 保持一致）
+          if (generatingChapterIdRef.current !== currentChapterIdRef.current) {
+            streamingBufferRef.current = '';
+            selectionRangeRef.current = null;
+            return;
+          }
           if (isTextSelected && selectionRangeRef.current) {
             // 流结束后一次性原子替换选中文本
             const { from, to } = selectionRangeRef.current;
@@ -283,6 +330,9 @@ export function useEditorAI({
         onError: (error: Error) => {
           console.error('AI stream error:', error);
           toast.error('AI 润色失败', error.message || '请检查网络或 API 配置');
+          // 标记本次生成出错：润色 onError 不修改编辑器内容，
+          // await 后 saveVersion 会保存"未变化"的版本（标签误导），应跳过
+          errorOccurredRef.current = true;
           streamingBufferRef.current = '';
           selectionRangeRef.current = null;
         },
@@ -295,21 +345,24 @@ export function useEditorAI({
         abortControllerRef.current.signal
       );
 
-      if (abortControllerRef.current?.signal.aborted) {
+      if (wasAbortedRef.current) {
         // 用户取消，不保存版本
         return;
       }
 
-      saveVersion(currentChapterId, 'AI 润色');
+      // 出错时润色 onError 未修改编辑器，保存版本会写入"未变化"快照（标签误导），跳过
+      if (!errorOccurredRef.current) {
+        saveVersion(currentChapterId, 'AI 润色');
+      }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = getErrorMessage(e);
       console.error('AI polish error:', e);
       toast.error('AI 润色失败', msg);
     } finally {
       // 卸载后不再 setState；非主动中止且编辑器未销毁时才恢复可编辑状态
       // 不能在 finally 中 return（no-unsafe-finally），改用条件包裹
       if (mountedRef.current) {
-        if (!abortControllerRef.current?.signal.aborted && !editor.isDestroyed) {
+        if (!wasAbortedRef.current && !editor.isDestroyed) {
           editor.setEditable(true);
         }
         setIsGenerating(false);

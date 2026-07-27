@@ -8,7 +8,7 @@
       "DOM",
       "DOM.Iterable"
     ],
-    "types": ["node"],
+    "types": ["node", "@testing-library/jest-dom"],
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "bundler",
@@ -30,7 +30,6 @@
     }
   },
   "include": [
-    "src",
-    "api"
+    "src"
   ]
 }

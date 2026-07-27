@@ -1,7 +1,9 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef, useId, memo } from 'react';
 import { Plus, User, ChevronRight, Edit3, Trash2, Check, X } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
+import { confirm } from '@/hooks/useConfirm';
 import { CHARACTER_ROLE_LABELS, DEFAULT_CHARACTER_ROLE, type Character, type CharacterRelationship } from '@/types';
+import Empty from '@/components/Empty';
 
 const RELATIONSHIP_TYPES = ['父子', '母女', '兄妹', '姐弟', '夫妻', '恋人', '朋友', '仇敌', '师徒', '同事', '上下级', '对手', '知己', '亲属'];
 
@@ -41,6 +43,11 @@ const BUILTIN_PROFILE_FIELDS: { key: string; label: string; multiline?: boolean 
 
 const BUILTIN_PROFILE_KEYS = BUILTIN_PROFILE_FIELDS.map(f => f.key);
 
+// 列表虚拟化阈值：超过该数量时分批渲染，避免一次性挂载大量 DOM
+const VIRTUALIZATION_THRESHOLD = 50;
+const INITIAL_BATCH = 20;
+const BATCH_SIZE = 20;
+
 function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void }) {
   const updateCharacter = useAppStore(s => s.updateCharacter);
   const characters = useAppStore(s => s.characters);
@@ -65,6 +72,7 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
   const [newRelationType, setNewRelationType] = useState('');
   const [newRelationDesc, setNewRelationDesc] = useState('');
   const [newRelationIntensity, setNewRelationIntensity] = useState(50);
+  const uid = useId();
 
   const customKeys = Object.keys(draft).filter(k => !BUILTIN_PROFILE_KEYS.includes(k));
   const otherCharacters = characters.filter(c => c.id !== char.id);
@@ -195,9 +203,10 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
       <div className="space-y-2">
         {BUILTIN_PROFILE_FIELDS.map(field => (
           <div key={field.key}>
-            <label className="block text-[10px] text-ink-500 mb-1">{field.label}</label>
+            <label htmlFor={`${uid}-${field.key}`} className="block text-[10px] text-ink-500 mb-1">{field.label}</label>
             {field.multiline ? (
               <textarea
+                id={`${uid}-${field.key}`}
                 value={draft[field.key] ?? ''}
                 onChange={e => setDraft(d => ({ ...d, [field.key]: e.target.value }))}
                 onBlur={() => commitField(field.key, draft[field.key] ?? '')}
@@ -207,6 +216,7 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
               />
             ) : (
               <input
+                id={`${uid}-${field.key}`}
                 value={draft[field.key] ?? ''}
                 onChange={e => setDraft(d => ({ ...d, [field.key]: e.target.value }))}
                 onBlur={() => commitField(field.key, draft[field.key] ?? '')}
@@ -226,8 +236,9 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
             onClick={() => setShowAddField(s => !s)}
             className="p-0.5 rounded text-ink-500 hover:text-amber-400 hover:bg-ink-800 transition-colors"
             title="添加字段"
+            aria-label="添加字段"
           >
-            <Plus className="w-3.5 h-3.5" />
+            <Plus className="w-3.5 h-3.5" aria-hidden="true" />
           </button>
         </div>
 
@@ -253,19 +264,21 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
           <p className="text-[10px] text-ink-600 text-center py-1">点击 + 添加自定义字段</p>
         )}
 
-        {customKeys.map(key => (
+        {customKeys.map((key, idx) => (
           <div key={key}>
             <div className="flex items-center justify-between mb-1">
-              <label className="text-[10px] text-ink-500 truncate">{key}</label>
+              <label htmlFor={`${uid}-custom-${idx}`} className="text-[10px] text-ink-500 truncate">{key}</label>
               <button
                 onClick={() => handleDeleteField(key)}
                 className="p-0.5 rounded text-ink-500 hover:text-red-400 hover:bg-ink-800 transition-colors flex-shrink-0"
                 title="删除字段"
+                aria-label="删除字段"
               >
-                <Trash2 className="w-3 h-3" />
+                <Trash2 className="w-3 h-3" aria-hidden="true" />
               </button>
             </div>
             <textarea
+              id={`${uid}-custom-${idx}`}
               value={draft[key] ?? ''}
               onChange={e => setDraft(d => ({ ...d, [key]: e.target.value }))}
               onBlur={() => commitField(key, draft[key] ?? '')}
@@ -284,16 +297,18 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
             onClick={() => setShowAddRelation(s => !s)}
             className="p-0.5 rounded text-ink-500 hover:text-amber-400 hover:bg-ink-800 transition-colors"
             title="添加关系"
+            aria-label="添加关系"
           >
-            <Plus className="w-3.5 h-3.5" />
+            <Plus className="w-3.5 h-3.5" aria-hidden="true" />
           </button>
         </div>
 
         {showAddRelation && (
           <div className="space-y-1.5 p-1.5 bg-ink-800/40 rounded">
             <div>
-              <label className="block text-[10px] text-ink-500 mb-0.5">关联角色</label>
+              <label htmlFor={`${uid}-rel-target`} className="block text-[10px] text-ink-500 mb-0.5">关联角色</label>
               <select
+                id={`${uid}-rel-target`}
                 value={newRelationTarget}
                 onChange={e => setNewRelationTarget(e.target.value)}
                 className="input text-xs py-1 w-full"
@@ -305,8 +320,9 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
               </select>
             </div>
             <div>
-              <label className="block text-[10px] text-ink-500 mb-0.5">关系类型</label>
+              <label htmlFor={`${uid}-rel-type`} className="block text-[10px] text-ink-500 mb-0.5">关系类型</label>
               <input
+                id={`${uid}-rel-type`}
                 type="text"
                 list="character-relation-types"
                 value={newRelationType}
@@ -322,8 +338,9 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
               </datalist>
             </div>
             <div>
-              <label className="block text-[10px] text-ink-500 mb-0.5">关系描述</label>
+              <label htmlFor={`${uid}-rel-desc`} className="block text-[10px] text-ink-500 mb-0.5">关系描述</label>
               <input
+                id={`${uid}-rel-desc`}
                 value={newRelationDesc}
                 onChange={e => setNewRelationDesc(e.target.value)}
                 className="input text-xs py-1 w-full"
@@ -332,10 +349,11 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
             </div>
             <div>
               <div className="flex items-center justify-between mb-0.5">
-                <label className="text-[10px] text-ink-500">关系强度</label>
+                <label htmlFor={`${uid}-rel-intensity`} className="text-[10px] text-ink-500">关系强度</label>
                 <span className="text-[10px] text-amber-400">{newRelationIntensity}%</span>
               </div>
               <input
+                id={`${uid}-rel-intensity`}
                 type="range"
                 min="0"
                 max="100"
@@ -378,8 +396,9 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
               <button
                 onClick={() => handleDeleteRelation(rel.targetId, rel.type)}
                 className="p-0.5 rounded text-ink-500 hover:text-red-400 hover:bg-ink-700/50 transition-colors flex-shrink-0"
+                aria-label="删除关系"
               >
-                <X className="w-3 h-3" />
+                <X className="w-3 h-3" aria-hidden="true" />
               </button>
             </div>
           );
@@ -394,6 +413,114 @@ function CharacterEditor({ char, onDone }: { char: Character; onDone: () => void
   );
 }
 
+// ============ 列表项子组件（memo 化避免无关重渲染） ============
+interface CharacterItemProps {
+  char: Character;
+  isSelected: boolean;
+  isEditing: boolean;
+  onToggleSelect: (char: Character, isSelected: boolean) => void;
+  onEdit: (char: Character) => void;
+  onDelete: (char: Character) => void;
+  onDoneEdit: () => void;
+}
+
+function CharacterItem({
+  char,
+  isSelected,
+  isEditing,
+  onToggleSelect,
+  onEdit,
+  onDelete,
+  onDoneEdit,
+}: CharacterItemProps) {
+  return (
+    <div style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 80px' }}>
+      <div
+        onClick={() => onToggleSelect(char, isSelected)}
+        className={`group flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
+          isSelected ? 'bg-amber-400/10' : 'hover:bg-ink-800/50'
+        }`}
+      >
+        <div
+          className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium flex-shrink-0"
+          style={{ backgroundColor: char.color + '30', color: char.color }}
+        >
+          {char.name.slice(0, 1)}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm text-ink-200 truncate">{char.name}</div>
+          <div className="text-[10px] text-ink-500">
+            {CHARACTER_ROLE_LABELS[char.role]}
+          </div>
+        </div>
+        <ChevronRight className={`w-4 h-4 text-ink-500 transition-transform flex-shrink-0 ${
+          isSelected ? 'rotate-90' : ''
+        }`} />
+      </div>
+
+      {isSelected && !isEditing && (
+        <div className="ml-4 mt-1 mb-2 p-2 bg-ink-800/30 rounded text-xs space-y-2 animate-slide-down">
+          {char.profile?.personality && (
+            <div>
+              <span className="text-ink-500">性格：</span>
+              <span className="text-ink-300">{char.profile.personality}</span>
+            </div>
+          )}
+          {char.profile?.motivation && (
+            <div>
+              <span className="text-ink-500">动机：</span>
+              <span className="text-ink-300">{char.profile.motivation}</span>
+            </div>
+          )}
+          {char.profile?.weakness && (
+            <div>
+              <span className="text-ink-500">弱点：</span>
+              <span className="text-ink-300">{char.profile.weakness}</span>
+            </div>
+          )}
+          <div className="flex gap-1 pt-1">
+            <button
+              onClick={(e) => { e.stopPropagation(); onEdit(char); }}
+              className="flex-1 py-1 text-[10px] text-ink-400 hover:text-ink-200 bg-ink-700/50 rounded flex items-center justify-center gap-1"
+            >
+              <Edit3 className="w-3 h-3" />
+              编辑
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onDelete(char); }}
+              className="flex-1 py-1 text-[10px] text-red-400 hover:text-red-300 bg-red-500/10 rounded flex items-center justify-center gap-1"
+            >
+              <Trash2 className="w-3 h-3" />
+              删除
+            </button>
+          </div>
+        </div>
+      )}
+
+      {isSelected && isEditing && (
+        <div className="ml-4 mt-1 mb-2 bg-ink-800/30 rounded">
+          <CharacterEditor key={char.id} char={char} onDone={onDoneEdit} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// props 浅比较：char 引用 + isSelected/isEditing + 稳定回调引用
+function areCharacterItemPropsEqual(prev: CharacterItemProps, next: CharacterItemProps): boolean {
+  return (
+    prev.char === next.char &&
+    prev.isSelected === next.isSelected &&
+    prev.isEditing === next.isEditing &&
+    prev.onToggleSelect === next.onToggleSelect &&
+    prev.onEdit === next.onEdit &&
+    prev.onDelete === next.onDelete &&
+    prev.onDoneEdit === next.onDoneEdit
+  );
+}
+
+const MemoizedCharacterItem = memo(CharacterItem, areCharacterItemPropsEqual);
+
 export default function CharactersPanel() {
   const characters = useAppStore(s => s.characters);
   const addCharacter = useAppStore(s => s.addCharacter);
@@ -403,12 +530,62 @@ export default function CharactersPanel() {
   const [newName, setNewName] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  const handleAdd = () => {
+  // 分批渲染状态：列表超阈值时仅挂载前 N 个，IntersectionObserver 触发后续批次
+  const [renderCount, setRenderCount] = useState(INITIAL_BATCH);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  const handleAdd = useCallback(() => {
     if (!newName.trim()) return;
     addCharacter({ name: newName.trim(), role: DEFAULT_CHARACTER_ROLE });
     setNewName('');
     setShowAdd(false);
-  };
+  }, [newName, addCharacter]);
+
+  // 列表项交互：稳定回调避免所有列表项重渲染
+  const handleToggleSelect = useCallback((char: Character, isSelected: boolean) => {
+    setSelectedId(isSelected ? null : char.id);
+    if (!isSelected) setEditingId(null);
+  }, []);
+
+  const handleEdit = useCallback((char: Character) => {
+    setEditingId(char.id);
+  }, []);
+
+  const handleDelete = useCallback(async (char: Character) => {
+    if (await confirm(`删除角色"${char.name}"？`)) {
+      deleteCharacter(char.id);
+      setSelectedId(null);
+      setEditingId(null);
+    }
+  }, [deleteCharacter]);
+
+  const handleDoneEdit = useCallback(() => {
+    setEditingId(null);
+  }, []);
+
+  // IntersectionObserver：列表超阈值时分批挂载后续批次（进入视口才渲染）
+  // jsdom 等无 IntersectionObserver 的环境降级为全量渲染，不影响测试
+  useEffect(() => {
+    const total = characters.length;
+    if (total <= VIRTUALIZATION_THRESHOLD) return;
+    if (renderCount >= total) return;
+    const node = sentinelRef.current;
+    if (!node) return;
+    if (typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries[0]?.isIntersecting) {
+          setRenderCount(c => Math.min(c + BATCH_SIZE, total));
+        }
+      },
+      { rootMargin: '200px' },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [characters.length, renderCount]);
+
+  const isVirtualized = characters.length > VIRTUALIZATION_THRESHOLD;
+  const visibleItems = isVirtualized ? characters.slice(0, Math.min(renderCount, characters.length)) : characters;
 
   return (
     <div className="h-full flex flex-col">
@@ -417,8 +594,9 @@ export default function CharactersPanel() {
         <button
           onClick={() => setShowAdd(true)}
           className="p-1 rounded text-ink-500 hover:text-amber-400 hover:bg-ink-800 transition-colors"
+          aria-label="添加角色"
         >
-          <Plus className="w-4 h-4" />
+          <Plus className="w-4 h-4" aria-hidden="true" />
         </button>
       </div>
 
@@ -445,98 +623,29 @@ export default function CharactersPanel() {
 
       <div className="flex-1 overflow-y-auto">
         {characters.length === 0 ? (
-          <div className="p-6 text-center">
-            <User className="w-8 h-8 text-ink-600 mx-auto mb-2" />
-            <p className="text-sm text-ink-500">还没有角色</p>
-            <p className="text-xs text-ink-600">点击 + 添加第一个角色</p>
-          </div>
+          <Empty
+            icon={<User className="w-8 h-8 text-ink-600" />}
+            title="还没有角色"
+            description="点击 + 添加第一个角色"
+            className="p-6"
+          />
         ) : (
           <div className="p-1.5 space-y-0.5">
-            {characters.map(char => {
-              const isSelected = selectedId === char.id;
-              const isEditing = editingId === char.id;
-              return (
-                <div key={char.id}>
-                  <div
-                    onClick={() => {
-                      setSelectedId(isSelected ? null : char.id);
-                      if (!isSelected) setEditingId(null);
-                    }}
-                    className={`group flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
-                      isSelected ? 'bg-amber-400/10' : 'hover:bg-ink-800/50'
-                    }`}
-                  >
-                    <div
-                      className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium flex-shrink-0"
-                      style={{ backgroundColor: char.color + '30', color: char.color }}
-                    >
-                      {char.name.slice(0, 1)}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm text-ink-200 truncate">{char.name}</div>
-                      <div className="text-[10px] text-ink-500">
-                        {CHARACTER_ROLE_LABELS[char.role]}
-                      </div>
-                    </div>
-                    <ChevronRight className={`w-4 h-4 text-ink-500 transition-transform flex-shrink-0 ${
-                      isSelected ? 'rotate-90' : ''
-                    }`} />
-                  </div>
-
-                  {isSelected && !isEditing && (
-                    <div className="ml-4 mt-1 mb-2 p-2 bg-ink-800/30 rounded text-xs space-y-2 animate-slide-down">
-                      {char.profile?.personality && (
-                        <div>
-                          <span className="text-ink-500">性格：</span>
-                          <span className="text-ink-300">{char.profile.personality}</span>
-                        </div>
-                      )}
-                      {char.profile?.motivation && (
-                        <div>
-                          <span className="text-ink-500">动机：</span>
-                          <span className="text-ink-300">{char.profile.motivation}</span>
-                        </div>
-                      )}
-                      {char.profile?.weakness && (
-                        <div>
-                          <span className="text-ink-500">弱点：</span>
-                          <span className="text-ink-300">{char.profile.weakness}</span>
-                        </div>
-                      )}
-                      <div className="flex gap-1 pt-1">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setEditingId(char.id); }}
-                          className="flex-1 py-1 text-[10px] text-ink-400 hover:text-ink-200 bg-ink-700/50 rounded flex items-center justify-center gap-1"
-                        >
-                          <Edit3 className="w-3 h-3" />
-                          编辑
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (confirm(`删除角色"${char.name}"？`)) {
-                              deleteCharacter(char.id);
-                              setSelectedId(null);
-                              setEditingId(null);
-                            }
-                          }}
-                          className="flex-1 py-1 text-[10px] text-red-400 hover:text-red-300 bg-red-500/10 rounded flex items-center justify-center gap-1"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                          删除
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {isSelected && isEditing && (
-                    <div className="ml-4 mt-1 mb-2 bg-ink-800/30 rounded">
-                      <CharacterEditor key={char.id} char={char} onDone={() => setEditingId(null)} />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {visibleItems.map(char => (
+              <MemoizedCharacterItem
+                key={char.id}
+                char={char}
+                isSelected={selectedId === char.id}
+                isEditing={editingId === char.id}
+                onToggleSelect={handleToggleSelect}
+                onEdit={handleEdit}
+                onDelete={handleDelete}
+                onDoneEdit={handleDoneEdit}
+              />
+            ))}
+            {isVirtualized && renderCount < characters.length && (
+              <div ref={sentinelRef} className="h-1" aria-hidden="true" />
+            )}
           </div>
         )}
       </div>

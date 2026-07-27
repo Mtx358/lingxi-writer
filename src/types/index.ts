@@ -9,6 +9,14 @@ export interface Project {
   lastOpenedAt: string;
   totalWords: number;
   config: ProjectConfig;
+  /** 核心设定卡（灵犀设定 1.1）——可选，向后兼容旧项目 */
+  settingCard?: ProjectSettingCard;
+  /** 全局走向概览（灵犀蓝图 2.1）——锁定后正文创作以此为基准 */
+  blueprint?: BlueprintOverview;
+  /** 支线列表（灵犀总控 6.4） */
+  subplots?: Subplot[];
+  /** 存稿与更新管理（灵犀总控 6.5） */
+  updateSchedule?: UpdateSchedule;
 }
 
 export interface ProjectConfig {
@@ -22,9 +30,33 @@ export interface ProjectConfig {
   aiSettings: AISettings;
 }
 
+/** 应用级偏好（独立于项目持久化，新建项目时作为默认值） */
+export interface AppPreferences {
+  /** 自动保存间隔（毫秒），0 表示禁用 */
+  autoSaveInterval: number;
+  /** 默认字体大小 */
+  defaultFontSize: number;
+  /** 默认行高 */
+  defaultLineHeight: number;
+  /** 默认字体族 */
+  defaultFontFamily: string;
+  /** 默认主题 */
+  defaultTheme: 'dark' | 'light';
+  /** 是否显示字数统计 */
+  showWordCount: boolean;
+  /** 是否显示行号 */
+  showLineNumbers: boolean;
+  /** 启动时自动打开上次项目 */
+  reopenLastProject: boolean;
+  /** 大纲打磨默认诊断范围 */
+  defaultPolishScope: 'all' | 'current';
+}
+
 export interface AISettings {
   provider: 'mock' | 'openai' | 'local' | 'deepseek';
   apiKey?: string;
+  /** 主进程是否已持有可用 apiKey（Electron 环境下 apiKey 明文不下发渲染层，用此标志判断是否已配置） */
+  hasApiKey?: boolean;
   baseUrl?: string;
   model?: string;
   style: 'balanced' | 'action' | 'psychology' | 'description';
@@ -63,6 +95,10 @@ export interface Chapter {
   keyEvents?: string[];
   foreshadows?: string[];
   notes?: string;
+  /** 章节节拍（节拍编辑器的 5 大槽位） */
+  beats?: ChapterBeat[];
+  /** 场景定位仪四要素（场景级节点使用） */
+  sceneLocator?: SceneLocator;
 }
 
 export interface ChapterVersion {
@@ -191,6 +227,10 @@ export interface Material {
   updatedAt: string;
   // 图片/文件附件走本地文件路径（MaterialAttachment.path），不再内嵌 base64，避免体积膨胀与注入风险
   attachments?: MaterialAttachment[];
+  /** 父卡片 ID（卡片促活生成的子卡片归属其主卡） */
+  parentMaterialId?: string | null;
+  /** 卡片促活维度（如：秘密/创伤/伪装/动机），用于子卡片分组 */
+  questionDimension?: string;
 }
 
 export interface SearchResult {
@@ -236,6 +276,223 @@ export interface ChapterAnalysis {
   characters: string[];
   settings: string[];
   foreshadows: string[];
+}
+
+// ============================================================================
+// 大纲打磨域类型
+// ============================================================================
+
+/** 大纲打磨诊断维度，对应规格书六大维度 */
+export type OutlinePolishDimension =
+  | 'theme'          // 主题锚定与目标校验
+  | 'structure'      // 结构递进性
+  | 'character'      // 人物行为一致性
+  | 'logic'          // 叙事逻辑自洽性
+  | 'pacing'         // 叙事节奏与信息量
+  | 'foreshadow'     // 伏笔与线索闭环
+  | 'style';         // 文风一致性（专项）
+
+/** 大纲打磨问题严重等级 */
+export type OutlineIssueSeverity = 'error' | 'warning' | 'info';
+
+/** 大纲打磨单条诊断项 */
+export interface OutlineIssue {
+  id: string;
+  /** 诊断维度 */
+  dimension: OutlinePolishDimension;
+  /** 严重等级 */
+  severity: OutlineIssueSeverity;
+  /** 关联章节 ID（可空，全局问题无章节归属） */
+  chapterId?: string;
+  /** 关联章节标题（冗余字段，便于渲染与导出） */
+  chapterTitle?: string;
+  /** 问题简述 */
+  description: string;
+  /** 可落地建议 */
+  suggestion: string;
+  /** 是否已被用户忽略 */
+  ignored?: boolean;
+  /** 是否已采纳（用于批量操作追踪） */
+  resolved?: boolean;
+}
+
+/** 角色弧光分析项 */
+export interface CharacterArcAnalysis {
+  characterId: string;
+  characterName: string;
+  role: Character['role'];
+  /** 在哪些章节出现（chapterId 列表） */
+  appearanceChapters: string[];
+  /** 出场章节数 */
+  appearanceCount: number;
+  /** 连续未出场章节数（从最后一章倒推） */
+  consecutiveAbsence: number;
+  /** 弧光完整性评估：是否检测到关键转变点缺失 */
+  arcGaps: string[];
+  /** 风险等级 */
+  risk: 'high' | 'medium' | 'low' | 'ok';
+  /** 风险描述 */
+  riskDescription?: string;
+}
+
+/** 大纲节点扩展方案（情节扩展器输出） */
+export interface OutlineExpansionOption {
+  /** 方案标题 */
+  title: string;
+  /** 方案内容描述 */
+  content: string;
+  /** 该方案引入的冲突/张力点 */
+  dramaticTension: string;
+}
+
+/** 大纲打磨完整报告 */
+export interface OutlinePolishReport {
+  /** 报告生成时间 ISO */
+  generatedAt: string;
+  /** 诊断范围：'all' 全量 | chapterId 局部 */
+  scope: 'all' | string;
+  /** 关联项目 ID */
+  projectId: string;
+  /** 所有诊断项 */
+  issues: OutlineIssue[];
+  /** 节奏曲线（每章 tension，0-100） */
+  pacingCurve: { chapterId: string; chapterTitle: string; tension: number; wordCount: number }[];
+  /** 情感曲线（每章 emotion，0-100） */
+  emotionCurve: { chapterId: string; chapterTitle: string; emotion: number }[];
+  /** 三幕比例量化：[开端占比%, 发展占比%, 高潮与结局占比%] */
+  threeActRatio: [number, number, number];
+  /** 角色弧光分析 */
+  characterArcs: CharacterArcAnalysis[];
+  /** 伏笔密度热力图：每章埋设/推进/回收的伏笔数 */
+  foreshadowDensity: { chapterId: string; chapterTitle: string; planted: number; progressing: number; paidOff: number }[];
+  /** 总章节数 */
+  totalChapters: number;
+  /** 总字数 */
+  totalWords: number;
+}
+
+/** 大纲结构快照（用于版本对比） */
+export interface OutlineSnapshot {
+  id: string;
+  projectId: string;
+  createdAt: string;
+  label: string;
+  /** 章节结构快照（仅 order/parentId/levelType/title/summary） */
+  chapters: Pick<Chapter, 'id' | 'parentId' | 'order' | 'level' | 'levelType' | 'title' | 'summary'>[];
+}
+
+// ============================================================================
+// 灵感/骨架/章节打磨扩展类型
+// ============================================================================
+
+/** 章节节拍类型（章节节拍编辑器的 5 大固定节拍槽位） */
+export type ChapterBeatType =
+  | 'hook'         // 开章钩子
+  | 'progress'     // 推进节拍
+  | 'midpoint'     // 中间转折
+  | 'escalation'   // 加码节拍
+  | 'cliffhanger'; // 章末悬念
+
+/** 单个章节节拍 */
+export interface ChapterBeat {
+  /** 节拍类型 */
+  type: ChapterBeatType;
+  /** 节拍内容（具体描写/事件） */
+  content: string;
+  /** 是否已锁定（锁定后咬合校验不再要求修改） */
+  locked?: boolean;
+}
+
+/** 场景定位仪：标记场景级四要素 */
+export interface SceneLocator {
+  /** 视点人物 ID */
+  povCharacterId?: string;
+  /** 开场情绪标签（如：松弛/警觉/愤怒） */
+  emotionStart?: string;
+  /** 收尾情绪标签 */
+  emotionEnd?: string;
+  /** 信息释放量：reader-more / reader-same / reader-less */
+  infoRelease?: 'reader-more' | 'reader-same' | 'reader-less';
+  /** 关联伏笔 ID 列表（埋设/回收双向） */
+  foreshadowLinks?: string[];
+}
+
+/** 核心驱动锁定：作品主线基准线 */
+export interface CoreDriver {
+  /** 驱动类型 */
+  type: 'character' | 'plot' | 'theme';
+  /** 核心描述（如：主角弧光、核心冲突、核心主题） */
+  description: string;
+  /** 锁定时间 */
+  lockedAt: string;
+  /** 创作者确认备注 */
+  note?: string;
+}
+
+/** 冲突罗盘层级 */
+export type ConflictLayerType = 'inner' | 'interpersonal' | 'faction' | 'social';
+
+/** 单层冲突项（冲突罗盘） */
+export interface ConflictLayer {
+  /** 层级类型 */
+  layer: ConflictLayerType;
+  /** 冲突描述（如：旧日创伤 vs 当下责任） */
+  description: string;
+  /** 情节种子：3 个候选情节方向 */
+  seeds: string[];
+}
+
+/** 结构变体（骨架生成阶段预览 3 种叙事结构） */
+export interface StructureVariant {
+  /** 变体 ID */
+  id: string;
+  /** 结构名称（如：经典线性 / 双线交织 / 多视角罗生门） */
+  name: string;
+  /** 结构描述 */
+  description: string;
+  /** 核心优劣 */
+  pros: string;
+  cons: string;
+  /** 适配场景 */
+  fitScenarios: string;
+  /** 推荐的根层级结构（如：卷-章 / 幕-场-节） */
+  suggestedHierarchy: string[];
+}
+
+/** 卡片促活：AI 对素材卡片的深度提问 */
+export interface MaterialQuestion {
+  /** 问题内容 */
+  question: string;
+  /** 问题维度（如：秘密/创伤/伪装/动机） */
+  dimension: string;
+}
+
+/** 因果推演变动报告项 */
+export interface CausalImpactItem {
+  /** 受影响类型 */
+  type: 'broken' | 'weakened' | 'missing';
+  /** 受影响的章节 ID（若有） */
+  chapterId?: string;
+  /** 章节标题 */
+  chapterTitle?: string;
+  /** 影响描述 */
+  description: string;
+  /** 替代方案建议 */
+  alternative: string;
+}
+
+/** 因果推演报告 */
+export interface CausalImpactReport {
+  /** 假设的改动描述 */
+  changeDescription: string;
+  /** 受影响的目标节点 ID（如：人物/章节/伏笔） */
+  targetId: string;
+  /** 影响项列表 */
+  impacts: CausalImpactItem[];
+  /** 综合风险等级 */
+  overallRisk: 'high' | 'medium' | 'low';
+  /** 生成时间 */
+  generatedAt: string;
 }
 
 export interface ExportConfig {
@@ -330,3 +587,325 @@ export const DEFAULT_CHAPTER_STATUS: Chapter['status'] = 'draft';
 export const DEFAULT_FORESHADOW_STATUS: Foreshadow['status'] = 'planted';
 export const DEFAULT_FORESHADOW_PRIORITY: Foreshadow['priority'] = 'medium';
 export const DEFAULT_MATERIAL_TYPE: Material['type'] = 'inspiration';
+
+// ============================================================================
+// 灵犀助手扩展类型
+// ============================================================================
+
+/** 情感基调（灵犀设定 1.1） */
+export type EmotionalTone =
+  | 'hot-blooded'   // 热血
+  | 'light'         // 轻松
+  | 'dark'          // 黑暗
+  | 'cool'          // 爽文
+  | 'angsty'        // 虐文
+  | 'warm'          // 温馨
+  | 'comic';        // 搞笑
+
+/** 感情线类型（灵犀设定 1.1） */
+export type RomanceType = 'none' | 'single' | 'harem' | 'reverse-harem';
+
+/** 主角卡（灵犀设定 1.1 主角部分） */
+export interface ProtagonistCard {
+  name: string;
+  age?: string;
+  initialIdentity?: string;
+  personalityKeywords: string[];
+  coreDesire?: string;
+  fatalFlaw?: string;
+  goldenFinger?: string;
+  growthArc?: string;
+}
+
+/** 世界观卡（灵犀设定 1.1 世界观部分） */
+export interface WorldviewCard {
+  basicRules?: string;
+  powerSystem?: string;
+  factionLandscape?: string;
+  keyHistory?: string;
+}
+
+/** 核心冲突卡（灵犀设定 1.1 核心冲突部分） */
+export interface CoreConflictCard {
+  mainConflict?: string;
+  mainAntagonist?: string;
+  ultimateGoal?: string;
+}
+
+/** 核心设定卡（灵犀设定 1.1）——把零碎想法结构化的统一卡片 */
+export interface ProjectSettingCard {
+  title: string;
+  genreTags: string[];
+  /** 一句话卖点 */
+  sellingPoint?: string;
+  /** 预计总字数（单位：万字） */
+  estimatedTotalWords?: number;
+  protagonist: ProtagonistCard;
+  worldview: WorldviewCard;
+  coreConflict: CoreConflictCard;
+  emotionalTone: EmotionalTone;
+  romanceType: RomanceType;
+  /** AI 实时提问深化时的历史问答（用于上下文累积） */
+  qaHistory?: { question: string; answer: string; timestamp: string }[];
+  /** AI 自动检查出的矛盾点（手动或自动填充） */
+  contradictions?: { description: string; severity: 'error' | 'warning'; resolved: boolean }[];
+  updatedAt: string;
+}
+
+/** 卷概览（灵犀蓝图 2.1 分卷概览） */
+export interface VolumeOverview {
+  index: number;
+  title: string;
+  chapterRange: string;
+  coreTask: string;
+  endingHook?: string;
+}
+
+/** 主角成长弧线段（灵犀蓝图 2.1） */
+export interface GrowthArcSegment {
+  /** 本地稳定 id，用作 React key；老数据可能缺省，渲染时按 idx 兜底 */
+  id?: string;
+  volumeIndex: number;
+  fromState: string;
+  experiences: string;
+  toState: string;
+}
+
+/** 关键人物命运节点（灵犀蓝图 2.1） */
+export interface CharacterFateSegment {
+  characterId?: string;
+  characterName: string;
+  keyNodes: string;
+  ending?: string;
+}
+
+/** 转折节点（灵犀蓝图 2.1 核心冲突演变） */
+export interface PlotTurnPoint {
+  /** 本地稳定 id，用作 React key；老数据可能缺省，渲染时按 idx 兜底 */
+  id?: string;
+  /** 进度百分比（0-100），如 30 表示约 30% 处 */
+  progress: number;
+  title: string;
+  description: string;
+}
+
+/** 全局走向概览（灵犀蓝图 2.1） */
+export interface BlueprintOverview {
+  /** 主线一句话 */
+  mainline: string;
+  /** 起点状态 */
+  startPoint: string;
+  /** 转折节点 */
+  turnPoints: PlotTurnPoint[];
+  /** 终点 */
+  endPoint: string;
+  /** 主角成长弧线（按卷分段） */
+  growthArc: GrowthArcSegment[];
+  /** 主要人物命运线 */
+  characterFates: CharacterFateSegment[];
+  /** 分卷概览 */
+  volumes: VolumeOverview[];
+  /** 锁定时间（ISO），未锁定为 null */
+  lockedAt: string | null;
+  /** 改动影响报告（解锁后修改时生成） */
+  lastChangeImpact?: BlueprintChangeImpact;
+  updatedAt: string;
+}
+
+/** 蓝图改动影响报告（灵犀蓝图 2.5） */
+export interface BlueprintChangeImpact {
+  changeDescription: string;
+  affectedVolumes: number[];
+  affectedChapters: string[];
+  affectedForeshadows: string[];
+  riskLevel: 'high' | 'medium' | 'low';
+  suggestion: string;
+  generatedAt: string;
+}
+
+/** 支线状态（灵犀总控 6.4） */
+export type SubplotStatus = 'open' | 'progressing' | 'paused' | 'closed' | 'abandoned';
+
+/** 支线（灵犀总控 6.4） */
+export interface Subplot {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string;
+  status: SubplotStatus;
+  /** 开启章节 ID */
+  startChapterId: string | null;
+  /** 最近推进章节 ID */
+  lastProgressChapterId: string | null;
+  /** 预计收束章节 ID */
+  expectedCloseChapterId: string | null;
+  /** 关联角色 */
+  relatedCharacters: string[];
+  /** 关联伏笔 */
+  relatedForeshadows: string[];
+  /** 备注 */
+  notes: string;
+  /** 上次推进时间（ISO），用于无进展预警 */
+  lastProgressAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 存稿与更新管理（灵犀总控 6.5） */
+export interface UpdateSchedule {
+  /** 日更目标字数（0 表示不限制） */
+  dailyTargetWords: number;
+  /** 日更速度（字/天，用于预估） */
+  dailySpeed: number;
+  /** 收费章节数量阈值（用于上架建议） */
+  paywallChapterThreshold: number;
+  /** 上次更新时间（ISO） */
+  lastUpdateAt: string | null;
+  /** 是否开启断更预警 */
+  enableStaleAlert: boolean;
+  /** 断更预警阈值（天） */
+  staleAlertDays: number;
+}
+
+/** 敏感词命中（灵犀发布 5.2） */
+export interface SensitiveWordHit {
+  word: string;
+  /** 所属章节 id（多章节检查时用于定位） */
+  chapterId: string;
+  /** 所属章节标题（用于 UI 展示） */
+  chapterTitle: string;
+  /** 出现位置（章节内段落序号） */
+  paragraphIndex: number;
+  /** 上下文片段 */
+  context: string;
+  /** 风险等级 */
+  severity: 'high' | 'medium' | 'low';
+  /** 替换建议 */
+  suggestion?: string;
+}
+
+/** 敏感词检查结果 */
+export interface SensitiveWordCheckResult {
+  totalHits: number;
+  hits: SensitiveWordHit[];
+  /**
+   * 按段落分组的统计。key 格式为 `${chapterId}:${paragraphIndex}`，
+   * 多章节检查时保证 key 唯一，避免不同章节的同序号段落互相覆盖。
+   */
+  byParagraph: Record<string, number>;
+}
+
+/** 章节标题方案（灵犀发布 5.2 章节标题生成） */
+export interface ChapterTitleOption {
+  title: string;
+  style: 'literal' | 'suspense' | 'poetic' | 'thematic';
+  reason: string;
+}
+
+/** 平台标签推荐结果（灵犀发布 5.2） */
+export interface PlatformTagRecommendation {
+  tags: string[];
+  categories: string[];
+  reason: string;
+}
+
+/** 平台标识（灵犀发布 5.1）——含晋江/七猫 */
+export type ExportPlatform = 'general' | 'qidian' | 'fanqie' | 'wechat' | 'jjwxc' | 'qimao';
+
+// ===== 灵犀助手扩展：标签与默认值 =====
+
+export const EMOTIONAL_TONE_LABELS: Record<EmotionalTone, string> = {
+  'hot-blooded': '热血',
+  'light': '轻松',
+  'dark': '黑暗',
+  'cool': '爽文',
+  'angsty': '虐文',
+  'warm': '温馨',
+  'comic': '搞笑',
+};
+
+export const ROMANCE_TYPE_LABELS: Record<RomanceType, string> = {
+  'none': '无女主/无男主',
+  'single': '单女主/单男主',
+  'harem': '后宫',
+  'reverse-harem': '逆后宫',
+};
+
+export const SUBPLOT_STATUS_LABELS: Record<SubplotStatus, string> = {
+  open: '已开启',
+  progressing: '推进中',
+  paused: '已暂停',
+  closed: '已收束',
+  abandoned: '已废弃',
+};
+
+export const SUBPLOT_STATUS_COLORS: Record<SubplotStatus, string> = {
+  open: 'bg-amber-500',
+  progressing: 'bg-blue-500',
+  paused: 'bg-gray-500',
+  closed: 'bg-emerald-500',
+  abandoned: 'bg-ink-600',
+};
+
+export const SUBPLOT_STATUSES = ['open', 'progressing', 'paused', 'closed', 'abandoned'] as const;
+export const EMOTIONAL_TONES = ['hot-blooded', 'light', 'dark', 'cool', 'angsty', 'warm', 'comic'] as const;
+export const ROMANCE_TYPES = ['none', 'single', 'harem', 'reverse-harem'] as const;
+export const EXPORT_PLATFORMS = ['general', 'qidian', 'fanqie', 'jjwxc', 'qimao', 'wechat'] as const;
+
+export const EXPORT_PLATFORM_LABELS: Record<ExportPlatform, string> = {
+  general: '通用',
+  qidian: '起点',
+  fanqie: '番茄',
+  jjwxc: '晋江',
+  qimao: '七猫',
+  wechat: '微信读书',
+};
+
+export const DEFAULT_SUBPLOT_STATUS: SubplotStatus = 'open';
+export const DEFAULT_EMOTIONAL_TONE: EmotionalTone = 'cool';
+export const DEFAULT_ROMANCE_TYPE: RomanceType = 'single';
+export const DEFAULT_EXPORT_PLATFORM: ExportPlatform = 'general';
+
+/** 创建一个空白的核心设定卡（新建项目时使用） */
+export function createEmptySettingCard(title: string): ProjectSettingCard {
+  return {
+    title,
+    genreTags: [],
+    protagonist: {
+      name: '',
+      personalityKeywords: [],
+    },
+    worldview: {},
+    coreConflict: {},
+    emotionalTone: DEFAULT_EMOTIONAL_TONE,
+    romanceType: DEFAULT_ROMANCE_TYPE,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/** 创建一份空白的蓝图概览（等待 AI 生成或手动填写） */
+export function createEmptyBlueprint(): BlueprintOverview {
+  return {
+    mainline: '',
+    startPoint: '',
+    turnPoints: [],
+    endPoint: '',
+    growthArc: [],
+    characterFates: [],
+    volumes: [],
+    lockedAt: null,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/** 默认存稿与更新管理配置 */
+export function createDefaultUpdateSchedule(): UpdateSchedule {
+  return {
+    dailyTargetWords: 4000,
+    dailySpeed: 4000,
+    paywallChapterThreshold: 20,
+    lastUpdateAt: null,
+    enableStaleAlert: true,
+    staleAlertDays: 2,
+  };
+}

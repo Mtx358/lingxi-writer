@@ -2,7 +2,7 @@
 // 是 React + Zustand toast 系统的标准模式；fast-refresh 警告为已知取舍。
 /* eslint-disable react-refresh/only-export-components */
 import { create } from 'zustand';
-import { v4 as uuidv4 } from 'uuid';
+import { generateId } from '@/utils/storage/helpers';
 
 interface ToastMessage {
   id: string;
@@ -27,7 +27,7 @@ const timers = new Map<string, ReturnType<typeof setTimeout>>();
 export const useToastStore = create<ToastStore>((set, get) => ({
   toasts: [],
   addToast: (toast) => {
-    const id = uuidv4();
+    const id = generateId();
     const newToast: ToastMessage = {
       ...toast,
       id,
@@ -92,7 +92,11 @@ export function ToastContainer() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+    <div
+      className="fixed bottom-4 right-4 z-50 flex flex-col gap-2"
+      role="region"
+      aria-label="通知区域"
+    >
       {toasts.map((toast) => (
         <div
           key={toast.id}
@@ -103,7 +107,8 @@ export function ToastContainer() {
             ${toast.type === 'warning' ? 'bg-amber-900/90 border border-amber-700' : ''}
             ${toast.type === 'info' ? 'bg-ink-800/90 border border-ink-600' : ''}
           `}
-          onClick={() => removeToast(toast.id)}
+          role={toast.type === 'error' ? 'alert' : 'status'}
+          aria-live="polite"
         >
           <div className="flex items-start gap-3">
             <div className="flex-1">
@@ -113,11 +118,9 @@ export function ToastContainer() {
               )}
             </div>
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                removeToast(toast.id);
-              }}
+              onClick={() => removeToast(toast.id)}
               className="text-ink-400 hover:text-ink-200"
+              aria-label="关闭通知"
             >
               ×
             </button>

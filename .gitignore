@@ -16,9 +16,21 @@ dist-ssr
 release
 electron/dist
 electron-win-dist
+electron/*.exe
+*.nsis
+*.blockmap
 
-# Build output
-build/
+# 本地构建中间产物
+coverage-tmp
+playwright-report
+test-results
+
+# Build output (前端构建产物，由 vite 重新生成)
+# 注意：build/ 目录包含图标等 electron-builder 资源，必须保留
+# dist 由 vite build 重新生成，无需提交
+
+# Coverage report (vitest --coverage)
+coverage/
 
 # Editor directories and files
 .vscode/*
@@ -43,3 +55,11 @@ merge_project.py
 创作工坊-完整源码.txt
 创作工坊-完整源码_审查版.txt
 创作工坊_完整源码_v1.0.0.txt
+审查版源码_*.txt
+LingxiWriter-source.zip
+
+# 根目录散落的构建产物（vite/electron 误落根目录）
+/*.cjs
+/EditorPage-*.js
+/ExportPage-*.js
+/*.zip

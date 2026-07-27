@@ -1,7 +1,9 @@
-import { Document, Paragraph, TextRun, HeadingLevel, AlignmentType, Packer } from 'docx';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import JSZip from 'jszip';
-import type { Project, Chapter } from '@/types';
+// 大型库（docx / pdf-lib / @pdf-lib/fontkit / jszip）改为按需动态 import：
+// 仅在对应导出函数被调用时加载，避免进入主 bundle（Vite 自动 code-split）。
+// 此处仅保留类型引用（编译期擦除，不产生运行时导入）。
+import type { Paragraph } from 'docx';
+import type { PDFFont } from 'pdf-lib';
+import type { Project, Chapter, ExportPlatform } from '@/types';
 
 const CHINESE_FONT_BASE64 = '';
 
@@ -10,7 +12,7 @@ export interface ExportData {
   chapters: Chapter[]; // 已排序的 level===2 主章节
   includeToc: boolean;
   style: 'novel' | 'article' | 'script';
-  platform?: 'general' | 'qidian' | 'fanqie' | 'wechat';
+  platform?: ExportPlatform;
   /**
    * 导出进度回调（可选）。导出器在章节循环与打包阶段调用，供调用方推进真实进度条。
    * - current/total：章节级粒度（generating 阶段）
@@ -23,6 +25,22 @@ export interface ExportData {
 
 export type ExportProgressStage = 'preparing' | 'generating' | 'packing' | 'saving';
 
+/**
+ * 安全调用 onProgress 回调：导出器调用方在 setState 时若组件已卸载或 React 内部抛错，
+ * 会让异常冒泡中断整次导出（PDF/DOCX 中途半成品）。这里 catch 后仅 warn，保证导出流程继续。
+ */
+function callProgressSafely(
+  fn: ExportData['onProgress'],
+  info: { current: number; total: number; stage: ExportProgressStage },
+): void {
+  if (!fn) return;
+  try {
+    fn(info);
+  } catch (e) {
+    console.warn('onProgress callback error:', e);
+  }
+}
+
 export interface PlatformConfig {
   indentSize: number;
   lineHeight: number;
@@ -34,7 +52,7 @@ export interface PlatformConfig {
   frontMatter: boolean;
 }
 
-const PLATFORM_CONFIGS: Record<string, PlatformConfig> = {
+const PLATFORM_CONFIGS: Record<ExportPlatform, PlatformConfig> = {
   general: {
     indentSize: 2,
     lineHeight: 1.8,
@@ -65,6 +83,28 @@ const PLATFORM_CONFIGS: Record<string, PlatformConfig> = {
     includeChapterNumber: true,
     frontMatter: false,
   },
+  // 晋江文学城：行距偏紧、12 号字、章节标题居中、含"第 N 章"
+  jjwxc: {
+    indentSize: 2,
+    lineHeight: 1.6,
+    fontSize: 12,
+    chapterTitleStyle: 'center',
+    chapterTitleSize: 16,
+    paragraphSpacing: 6,
+    includeChapterNumber: true,
+    frontMatter: false,
+  },
+  // 七猫小说：行距偏松、14 号字、章节标题居中、含"第 N 章"
+  qimao: {
+    indentSize: 2,
+    lineHeight: 1.7,
+    fontSize: 14,
+    chapterTitleStyle: 'center',
+    chapterTitleSize: 18,
+    paragraphSpacing: 10,
+    includeChapterNumber: true,
+    frontMatter: false,
+  },
   wechat: {
     indentSize: 2,
     lineHeight: 1.7,
@@ -77,7 +117,7 @@ const PLATFORM_CONFIGS: Record<string, PlatformConfig> = {
   },
 };
 
-function getPlatformConfig(platform?: string): PlatformConfig {
+function getPlatformConfig(platform?: ExportPlatform): PlatformConfig {
   return PLATFORM_CONFIGS[platform || 'general'] || PLATFORM_CONFIGS.general;
 }
 
@@ -94,6 +134,11 @@ const EXPORT_YIELD_EVERY_N_CHAPTERS = 3;
 /**
  * 把 HTML 内容转成纯文本段落数组。
  * 优先用 DOMParser 解析（浏览器/Electron 渲染进程可用），失败时降级为正则。
+ *
+ * 安全说明：先移除 script/style/noscript/template/title/meta/link 等非可见内容元素，
+ * 否则 textContent 会把 <script>alert(1)</script> 的 alert(1) 当作文本输出到导出文件。
+ * 虽然 alert(1) 作为纯文本不会被执行（不是真 XSS），但属于内容污染：
+ * 用户在章节里粘贴了带 script 的 HTML 源码时，导出文件不应混入脚本源代码文本。
  */
 export function htmlToParagraphs(html: string): string[] {
   if (!html) return [];
@@ -103,6 +148,9 @@ export function htmlToParagraphs(html: string): string[] {
       const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html');
       const root = doc.body.firstElementChild as HTMLElement | null;
       if (root) {
+        // 先移除非可见内容元素：script/style/noscript/template/title/meta/link
+        // 否则 textContent 会包含 <script> 内的 JS 源码文本，污染导出内容
+        root.querySelectorAll('script, style, noscript, template, title, meta, link').forEach(el => el.remove());
         // 将 <br> 替换为标记文本节点
         root.querySelectorAll('br').forEach(br => {
           br.replaceWith(doc.createTextNode(PARA_SPLIT_MARKER));
@@ -124,8 +172,12 @@ export function htmlToParagraphs(html: string): string[] {
     }
   }
 
-  // 正则降级方案
+  // 正则降级方案：先剥离 script/style/noscript/template 整块（含内容），再剥离所有标签
   const text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+    .replace(/<template[\s\S]*?<\/template>/gi, '')
     .replace(/<\/(p|div|h[1-6]|li|blockquote|tr)>/gi, PARA_SPLIT_MARKER)
     .replace(/<br\s*\/?>/gi, PARA_SPLIT_MARKER)
     .replace(/<[^>]*>/g, '')
@@ -170,10 +222,12 @@ function toBase64(data: ArrayBuffer | Uint8Array): string {
  */
 export async function generateDocx(data: ExportData): Promise<string> {
   const { project, chapters, includeToc, platform, onProgress } = data;
+  // 动态加载 docx：仅在实际导出 DOCX 时拉取，避免进入主 bundle
+  const { Document, Paragraph, TextRun, HeadingLevel, AlignmentType, Packer } = await import('docx');
   const config = getPlatformConfig(platform);
 
   const children: Paragraph[] = [];
-  onProgress?.({ current: 0, total: chapters.length, stage: 'preparing' });
+  callProgressSafely(onProgress, { current: 0, total: chapters.length, stage: 'preparing' });
 
   if (config.frontMatter) {
     children.push(
@@ -240,7 +294,7 @@ export async function generateDocx(data: ExportData): Promise<string> {
     }
     const ch = chapters[idx];
     // 上报真实进度：每章生成后通知调用方
-    onProgress?.({ current: idx + 1, total: chapters.length, stage: 'generating' });
+    callProgressSafely(onProgress, { current: idx + 1, total: chapters.length, stage: 'generating' });
     const title = config.includeChapterNumber ? `${idx + 1}. ${ch.title}` : ch.title;
     children.push(
       new Paragraph({
@@ -281,7 +335,7 @@ export async function generateDocx(data: ExportData): Promise<string> {
   }
 
   const doc = new Document({
-    creator: '创作工坊',
+    creator: '灵犀写作助手',
     title: project.title || '未命名作品',
     description: project.description,
     sections: [
@@ -293,7 +347,7 @@ export async function generateDocx(data: ExportData): Promise<string> {
   });
 
   // 打包序列化是重计算（可能秒级），上报 packing 阶段
-  onProgress?.({ current: chapters.length, total: chapters.length, stage: 'packing' });
+  callProgressSafely(onProgress, { current: chapters.length, total: chapters.length, stage: 'packing' });
   return Packer.toBase64String(doc);
 }
 
@@ -302,7 +356,9 @@ let cachedFontBytes: Uint8Array | null = null;
 
 // pdf-lib 的 embedFont 仅支持 TTF/OTF 格式，woff/woff2 无法直接嵌入。
 // 此处列出多个可用 TTF 源，按顺序尝试，提升离线/弱网环境可用性。
-const FONT_URLS_TTF = [
+// 注：当前 CSP 不允许外联这些源（见 fetchFontFromNetwork），常量保留以备
+// 后续放宽 CSP 或切换字体源时复用，故导出避免被 noUnusedLocals 误判为死代码。
+export const FONT_URLS_TTF = [
   // StellarCN/scp_zh 提供的 SimHei TTF，体积适中、字形覆盖全
   'https://cdn.jsdelivr.net/gh/StellarCN/scp_zh/fonts/SimHei.ttf',
   // jsDelivr 备用源
@@ -380,17 +436,10 @@ async function saveFontToIDB(bytes: Uint8Array): Promise<void> {
 }
 
 async function fetchFontFromNetwork(): Promise<Uint8Array | null> {
-  for (const url of FONT_URLS_TTF) {
-    try {
-      const response = await fetch(url);
-      if (!response.ok) continue;
-      const arrayBuffer = await response.arrayBuffer();
-      if (arrayBuffer.byteLength === 0) continue;
-      return new Uint8Array(arrayBuffer);
-    } catch {
-      // 尝试下一个 URL
-    }
-  }
+  // CSP connect-src 不允许外联 jsdelivr/fastly 等字体源，fetch 会被静默拦截
+  // （catch 分支吞掉错误后返回 null），实际为不可达死代码。
+  // 字体回退仅依赖本地打包字体（CHINESE_FONT_BASE64）与 IndexedDB 缓存。
+  // 保留函数签名不变以兼容调用方 loadChineseFont 的优先级链。
   return null;
 }
 
@@ -448,13 +497,39 @@ export interface PdfExportResult {
 }
 
 /**
+ * Helvetica 仅支持 WinAnsi 编码（Latin-1 + 部分 Windows 字符），中文/emoji/其他
+ * 非 WinAnsi 字符会让 pdf-lib 的 widthOfTextAtSize / drawText 抛
+ * "WinAnsi cannot encode 'X'"。中文字体加载失败降级到 Helvetica 时，
+ * 用本函数逐字符探测编码能力，将无法编码的字符替换为 '?'，保证导出不中断。
+ *
+ * 逐字符探测而非整体 try/catch 的理由：单段中文里常夹杂英文/数字/标点，
+ * 整体替换会丢失可读的 ASCII 部分；逐字符处理能保留所有可编码字符。
+ */
+function sanitizeForWinAnsi(text: string, font: PDFFont): string {
+  let result = '';
+  for (const char of text) {
+    try {
+      // encodeText 是 pdf-lib 内部 drawText 用的编码入口，抛错即代表该字符无法编码
+      font.encodeText(char);
+      result += char;
+    } catch {
+      result += '?';
+    }
+  }
+  return result;
+}
+
+/**
  * 生成 PDF，返回 base64 字符串及字体加载状态。
  * 使用 pdf-lib 库，支持中文（尝试加载 Noto Sans SC 字体）。
  */
 export async function generatePdf(data: ExportData): Promise<PdfExportResult> {
   const { project, chapters, includeToc, onProgress } = data;
+  // 动态加载 pdf-lib 与 fontkit：仅在实际导出 PDF 时拉取，避免进入主 bundle
+  const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
+  const fontkit = (await import('@pdf-lib/fontkit')).default;
 
-  onProgress?.({ current: 0, total: chapters.length, stage: 'preparing' });
+  callProgressSafely(onProgress, { current: 0, total: chapters.length, stage: 'preparing' });
   const pdfDoc = await PDFDocument.create();
   const pageWidth = 595.28;
   const pageHeight = 841.89;
@@ -466,7 +541,11 @@ export async function generatePdf(data: ExportData): Promise<PdfExportResult> {
   const fontBytes = await loadChineseFont();
   if (fontBytes) {
     try {
-      chineseFont = await pdfDoc.embedFont(fontBytes);
+      // pdf-lib 的 embedFont 对自定义 TTF/OTF 字体需要 fontkit 实例来解析字形表，
+      // 否则 embedFont 会抛 "Cannot embed a non-standard font without fontkit" 错误，
+      // 导致中文字体永远加载失败、PDF 中文显示为方块。注册 fontkit 后即可正常嵌入。
+      pdfDoc.registerFontkit(fontkit);
+      chineseFont = await pdfDoc.embedFont(fontBytes, { subset: true });
       chineseFontLoaded = true;
     } catch {
       chineseFont = null;
@@ -475,6 +554,8 @@ export async function generatePdf(data: ExportData): Promise<PdfExportResult> {
   }
   const font = chineseFont || await pdfDoc.embedFont(StandardFonts.Helvetica);
   const boldFont = chineseFont ? font : await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  // 中文字体未加载时进入 WinAnsi 降级模式，drawText 前需对文本做编码安全清洗
+  const winAnsiFallback = !chineseFont;
 
   let y = pageHeight - margin;
   let currentPage = pdfDoc.addPage();
@@ -486,7 +567,9 @@ export async function generatePdf(data: ExportData): Promise<PdfExportResult> {
     const lineHeight = fontSize * 1.8;
     const useFont = isBold ? boldFont : font;
 
-    const chars = text.split('');
+    // 降级模式下清洗非 WinAnsi 字符（如中文/emoji），避免 widthOfTextAtSize / drawText 抛错中断导出
+    const safeText = winAnsiFallback ? sanitizeForWinAnsi(text, useFont) : text;
+    const chars = safeText.split('');
     const lines: string[] = [];
     let currentLine = '';
 
@@ -548,7 +631,7 @@ export async function generatePdf(data: ExportData): Promise<PdfExportResult> {
       await Promise.resolve();
     }
     const ch = chapters[chapterIdx];
-    onProgress?.({ current: chapterIdx + 1, total: chapters.length, stage: 'generating' });
+    callProgressSafely(onProgress, { current: chapterIdx + 1, total: chapters.length, stage: 'generating' });
     currentPage = pdfDoc.addPage();
     y = pageHeight - margin;
     drawTextOnPage(ch.title, 16, { bold: true, align: 'center', gapAfter: 10 });
@@ -562,7 +645,7 @@ export async function generatePdf(data: ExportData): Promise<PdfExportResult> {
   }
 
   // PDF 序列化是重计算，上报 packing 阶段
-  onProgress?.({ current: chapters.length, total: chapters.length, stage: 'packing' });
+  callProgressSafely(onProgress, { current: chapters.length, total: chapters.length, stage: 'packing' });
   const pdfBytes = await pdfDoc.save();
   return { base64: toBase64(pdfBytes), chineseFontLoaded };
 }
@@ -668,7 +751,7 @@ export function generateHtml(data: ExportData): string {
     chapters.forEach((ch, idx) => {
       const title = config.includeChapterNumber ? `${idx + 1}. ${ch.title}` : ch.title;
       parts.push(`
-    <li><a href="#ch-${ch.id}">${escapeXml(title)}</a></li>`);
+    <li><a href="#ch-${escapeXml(ch.id)}">${escapeXml(title)}</a></li>`);
     });
     parts.push(`
   </ul>`);
@@ -677,7 +760,7 @@ export function generateHtml(data: ExportData): string {
   chapters.forEach((ch, idx) => {
     const title = config.includeChapterNumber ? `${idx + 1}. ${ch.title}` : ch.title;
     parts.push(`
-  <h1 id="ch-${ch.id}">${escapeXml(title)}</h1>`);
+  <h1 id="ch-${escapeXml(ch.id)}">${escapeXml(title)}</h1>`);
 
     if (ch.summary) {
       parts.push(`
@@ -700,8 +783,10 @@ export function generateHtml(data: ExportData): string {
 
 export async function generateEpub(data: ExportData): Promise<string> {
   const { project, chapters, onProgress } = data;
+  // 动态加载 jszip：仅在实际导出 EPUB 时拉取，避免进入主 bundle
+  const JSZip = (await import('jszip')).default;
 
-  onProgress?.({ current: 0, total: chapters.length, stage: 'preparing' });
+  callProgressSafely(onProgress, { current: 0, total: chapters.length, stage: 'preparing' });
   const zip = new JSZip();
   const bookId = `urn:uuid:${project.id || Date.now().toString(36)}`;
   const title = escapeXml(project.title || '未命名作品');
@@ -739,7 +824,7 @@ export async function generateEpub(data: ExportData): Promise<string> {
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:title>${title}</dc:title>
-    <dc:creator>创作工坊</dc:creator>
+    <dc:creator>灵犀写作助手</dc:creator>
     <dc:language>zh-CN</dc:language>
     <dc:identifier id="bookid">${escapeXml(bookId)}</dc:identifier>${description ? `\n    <dc:description>${description}</dc:description>` : ''}
   </metadata>
@@ -784,7 +869,7 @@ ${navPoints}
       await Promise.resolve();
     }
     const ch = chapters[idx];
-    onProgress?.({ current: idx + 1, total: chapters.length, stage: 'generating' });
+    callProgressSafely(onProgress, { current: idx + 1, total: chapters.length, stage: 'generating' });
     const paragraphs = htmlToParagraphs(ch.content);
     const bodyParts: string[] = [];
     bodyParts.push(`    <h1>${escapeXml(ch.title)}</h1>`);
@@ -824,6 +909,10 @@ p.summary { text-indent: 0; color: #888; font-style: italic; text-align: center;
   zip.file('OEBPS/style.css', styleCss);
 
   // zip 打包序列化是重计算，上报 packing 阶段
-  onProgress?.({ current: chapters.length, total: chapters.length, stage: 'packing' });
+  callProgressSafely(onProgress, { current: chapters.length, total: chapters.length, stage: 'packing' });
   return zip.generateAsync({ type: 'base64', mimeType: 'application/epub+zip' });
 }
+
+// 注：大纲打磨报告 Markdown 导出已拆分到 ./outlinePolishExport.ts，
+// 避免静态导入本文件时强制拉取 docx/pdf-lib/jszip 三大库（共 ~960KB）。
+

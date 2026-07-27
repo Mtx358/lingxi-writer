@@ -1,28 +1,30 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useId, lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, FolderOpen, Sparkles, BookOpen, Layers, Map, Trash2, Clock, FileText, Upload } from 'lucide-react';
+import { Plus, FolderOpen, Sparkles, BookOpen, Layers, Map, Trash2, Clock, FileText, Upload, FileSearch } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { PROJECT_TEMPLATES } from '@/constants/mockData';
 import { formatDate } from '@/utils/storage';
+import { toast } from '@/hooks/useToast';
+import { getErrorMessage } from '@/lib/errorUtils';
+import { confirm } from '@/hooks/useConfirm';
+import { useFocusTrap } from '@/hooks/useFocusTrap';
 import type { Project } from '@/types';
-import ImportModal from '@/components/ImportModal';
 import OnboardingGuide from '@/components/OnboardingGuide';
+import { safeLocalStorageGet, safeLocalStorageSet } from '@/lib/safeStorage';
 
-// localStorage 在隐私模式/禁用存储时可能抛错，统一 try/catch 容错
-function safeLocalStorageGet(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
+// 导入弹窗懒加载：ImportModal 静态拉取 importUtils.ts（parseMarkdown/parseDocx + DOMPurify），
+// OutlineImportModal 静态拉取 outlineParser.ts（parseOutline + DOMPurify），两者合计近 900 行
+// 解析逻辑 + DOMPurify。仅在用户点击"导入"按钮时才需要，懒加载可显著降低首屏主入口 chunk 体积。
+const ImportModal = lazy(() => import('@/components/ImportModal'));
+const OutlineImportModal = lazy(() => import('@/components/OutlineImportModal'));
 
-function safeLocalStorageSet(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    /* 忽略存储不可用 */
-  }
+// 懒加载弹窗的统一占位：与 App.tsx 的 PageFallback 风格一致，避免空白闪烁
+function ModalFallback() {
+  return (
+    <div className="flex items-center justify-center p-8 text-ink-500 text-sm">
+      <div className="w-4 h-4 border-2 border-amber-400/30 border-t-amber-400 rounded-full animate-spin" />
+    </div>
+  );
 }
 
 export default function Home() {
@@ -33,10 +35,14 @@ export default function Home() {
   const deleteProject = useAppStore(s => s.deleteProject);
   const loadSampleProject = useAppStore(s => s.loadSampleProject);
   const [showNewModal, setShowNewModal] = useState(false);
+  const newModalRef = useFocusTrap<HTMLDivElement>(showNewModal);
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showOutlineModal, setShowOutlineModal] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [newProjectTitle, setNewProjectTitle] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState<Project['template']>('blank');
+  const projectTitleId = useId();
+  const templateGroupId = useId();
   // 创建中标记：防止重复点击触发多次 createProject+navigate
   const [creating, setCreating] = useState(false);
 
@@ -62,10 +68,13 @@ export default function Home() {
     if (!newProjectTitle.trim()) return;
     setCreating(true);
     try {
-      const project = createProject(newProjectTitle, selectedTemplate);
+      const project = await createProject(newProjectTitle, selectedTemplate);
       // 确保项目数据已写入存储后再导航
       await useAppStore.getState().openProject(project.id);
       navigate(`/project/${project.id}/editor`);
+    } catch (e) {
+      // 补 catch：createProject/openProject 抛错时只复位 creating，用户无反馈
+      toast.error('创建项目失败', getErrorMessage(e));
     } finally {
       setCreating(false);
     }
@@ -102,11 +111,18 @@ export default function Home() {
               <Sparkles className="w-5 h-5 text-ink-900" />
             </div>
             <div>
-              <h1 className="text-xl font-semibold text-ink-100">创作工坊</h1>
+              <h1 className="text-xl font-semibold text-ink-100">灵犀写作助手</h1>
               <p className="text-xs text-ink-500">人主导，AI 辅助</p>
             </div>
           </div>
           <div className="flex gap-2">
+            <button
+              onClick={() => setShowOutlineModal(true)}
+              className="btn btn-secondary"
+            >
+              <FileSearch className="w-4 h-4" />
+              导入大纲
+            </button>
             <button
               onClick={() => setShowImportModal(true)}
               className="btn btn-secondary"
@@ -164,26 +180,36 @@ export default function Home() {
                   {sortedProjects.slice(0, 6).map(project => (
                     <div
                       key={project.id}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => handleOpenProject(project.id)}
-                      className="group card p-5 cursor-pointer hover:border-amber-400/30 hover:shadow-medium transition-all duration-300 relative overflow-hidden"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleOpenProject(project.id);
+                        }
+                      }}
+                      aria-label={`打开项目 ${project.title}`}
+                      className="group card p-5 cursor-pointer hover:border-amber-400/30 hover:shadow-medium transition-all duration-300 relative overflow-hidden focus:outline-none focus:ring-2 focus:ring-amber-400/50"
                     >
                       <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-amber-400/0 via-amber-400/50 to-amber-400/0 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
 
                       <div className="flex items-start justify-between mb-3">
                         <div className="w-12 h-12 rounded-lg bg-ink-700/50 flex items-center justify-center">
-                          <FileText className="w-5 h-5 text-amber-400/80" />
+                          <FileText className="w-5 h-5 text-amber-400/80" aria-hidden="true" />
                         </div>
                         <button
-                          onClick={(e) => {
+                          onClick={async (e) => {
                             e.stopPropagation();
-                            // 暂用浏览器原生 confirm 对话框（项目暂无统一确认组件）
-                            if (confirm('确定要删除这个项目吗？')) {
+                            // 用自定义 ConfirmDialog 替代原生 confirm（Electron 中原生 confirm 会阻塞主进程）
+                            if (await confirm('确定要删除这个项目吗？')) {
                               deleteProject(project.id);
                             }
                           }}
+                          aria-label={`删除项目 ${project.title}`}
                           className="p-1.5 rounded-md text-ink-500 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 transition-all"
                         >
-                          <Trash2 className="w-4 h-4" />
+                          <Trash2 className="w-4 h-4" aria-hidden="true" />
                         </button>
                       </div>
                       <h3 className="text-base font-medium text-ink-100 mb-1 group-hover:text-amber-300 transition-colors">
@@ -239,17 +265,22 @@ export default function Home() {
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in"
           onClick={() => setShowNewModal(false)}
         >
-          <div 
+          <div
+            ref={newModalRef}
             className="card p-6 w-full max-w-md mx-4 animate-slide-up"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-project-modal-title"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="text-lg font-semibold text-ink-100 mb-1">新建项目</h2>
+            <h2 id="new-project-modal-title" className="text-lg font-semibold text-ink-100 mb-1">新建项目</h2>
             <p className="text-sm text-ink-500 mb-5">给你的项目起个名字，选择一个结构模板</p>
 
             <div className="space-y-5">
               <div>
-                <label className="block text-sm text-ink-300 mb-2">项目名称</label>
+                <label htmlFor={projectTitleId} className="block text-sm text-ink-300 mb-2">项目名称</label>
                 <input
+                  id={projectTitleId}
                   type="text"
                   value={newProjectTitle}
                   onChange={(e) => setNewProjectTitle(e.target.value)}
@@ -261,8 +292,8 @@ export default function Home() {
               </div>
 
               <div>
-                <label className="block text-sm text-ink-300 mb-2">结构模板</label>
-                <div className="grid grid-cols-2 gap-2">
+                <div id={templateGroupId} className="block text-sm text-ink-300 mb-2">结构模板</div>
+                <div className="grid grid-cols-2 gap-2" role="group" aria-labelledby={templateGroupId}>
                   {PROJECT_TEMPLATES.map(template => (
                     <button
                       key={template.id}
@@ -301,7 +332,17 @@ export default function Home() {
         </div>
       )}
 
-      {showImportModal && <ImportModal onClose={() => setShowImportModal(false)} />}
+      {showImportModal && (
+        <Suspense fallback={<ModalFallback />}>
+          <ImportModal onClose={() => setShowImportModal(false)} />
+        </Suspense>
+      )}
+
+      {showOutlineModal && (
+        <Suspense fallback={<ModalFallback />}>
+          <OutlineImportModal onClose={() => setShowOutlineModal(false)} />
+        </Suspense>
+      )}
 
       {showOnboarding && (
         <OnboardingGuide

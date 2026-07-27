@@ -79,3 +79,30 @@ export const FORESHADOW_STALE_THRESHOLD = 5;
 
 /** 章节批量合并最小选中数：少于 2 个章节不允许合并 */
 export const CHAPTER_BATCH_MERGE_MIN = 2;
+
+/**
+ * 敏感词过滤词库（灵犀发布 5.2）
+ * 本地词库 + 简单匹配，无 LLM 调用。
+ * 抽取到 constants 便于统一维护与未来扩展（如用户自定义词库）。
+ */
+export const SENSITIVE_WORDS: readonly string[] = [
+  // 政治类
+  '习近平', '毛泽东', '邓小平', '江泽民', '胡锦涛', '温家宝', '李克强', '李强',
+  '共产党', '国民党', '法轮功', '六四', '天安门', '文革', '文化大革命',
+  // 暴力类
+  '杀掉', '杀死', '屠杀', '灭族',
+  // 色情类（部分）
+  '性交', '做爱', '强奸', '轮奸',
+  // 违禁品类
+  '海洛因', '冰毒', '大麻', '摇头丸', '可卡因',
+  // 其他
+  '诈骗', '传销', '邪教',
+];
+
+/** 高严重度敏感词子集：命中时 severity 标记为 high，其余为 medium */
+export const HIGH_SEVERITY_SENSITIVE_WORDS: readonly string[] = [
+  '强奸', '轮奸', '海洛因', '冰毒', '大麻',
+];
+
+/** 阅读速度（字/分钟）：用于估算阅读时长，字数 / 该值 = 阅读分钟数 */
+export const READING_SPEED_WPM = 400;

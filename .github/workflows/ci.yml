@@ -1,0 +1,167 @@
+# 灵犀写作助手 CI 门禁
+#
+# 触发条件：push 到 main / 任一 PR
+# 检查项：依赖审计 + lint + typecheck（renderer + electron）+ 单元测试 + 覆盖率门禁 + build
+# 任一失败阻止合并，确保 main 分支始终可发布
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 同一 PR 多次 push 时取消旧的运行，节省 CI 资源
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-typecheck-test:
+    name: Audit + Lint + Typecheck + Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        # npm ci 严格按 package-lock.json 安装，确保 CI 与本地环境一致
+        run: npm ci
+
+      - name: Dependency audit (production, strict)
+        # 严格审计生产依赖：high/critical 漏洞直接阻断 CI
+        # 生产依赖会打包进最终用户安装的 Electron 应用，漏洞直接影响用户
+        # --omit=dev 排除开发依赖（vite/vitest/esbuild 等不会进入打包产物）
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: false
+
+      - name: Dependency audit (dev, informational)
+        # 信息性审计开发依赖：dev 工具（electron/vite/esbuild）漏洞不进入打包产物，
+        # 但仍可能影响开发者机器（如 esbuild dev server CSRF 可被恶意网站利用）
+        # continue-on-error=true：仅打印警告，不阻断 CI（dev 漏洞通常需等上游修复）
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck (renderer)
+        # 渲染层 tsc：通过 tsconfig.json 的 project references 编译
+        run: npx tsc --noEmit
+
+      - name: Typecheck (electron)
+        # electron 层独立 tsconfig，单独编译验证
+        run: npx tsc -p tsconfig.electron.json --noEmit
+
+      - name: Unit tests with coverage
+        # vitest run --coverage：执行单次测试并收集覆盖率
+        # 覆盖率门槛见 vitest.config.ts：低于阈值时 vitest 返回非零退出码阻断 CI
+        # 当前阈值（防回退）：lines 89.5% / functions 86.8% / branches 88.5% / statements 89.5%
+        # 后续随测试覆盖逐步提高
+        run: npm run test:coverage
+        env:
+          # CI 环境强制非交互模式
+          CI: 'true'
+
+      - name: Upload coverage report
+        # 将 lcov 报告上传为 artifact，便于在 PR 上传到 Codecov / Coveralls
+        # 保留 7 天，避免长期堆积
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage/
+            coverage.lcov
+          retention-days: 7
+          if-no-files-found: ignore
+
+  build:
+    name: Build (vite + tsc)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # 构建依赖前一道检查通过，避免浪费资源构建有 lint/type 错误的代码
+    needs: lint-typecheck-test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        # npm run build = tsc -b && vite build，验证生产构建无错误
+        run: npm run build
+        env:
+          # 生产构建模式，禁用 sourcemap 内联
+          NODE_ENV: 'production'
+
+  e2e:
+    name: E2E Tests (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # 与 build 并行：均依赖 lint-typecheck-test 通过，避免浪费资源跑有类型错误的 E2E
+    needs: lint-typecheck-test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser (chromium)
+        # 仅安装 chromium：playwright.config.ts projects 只配置了 chromium，
+        # Electron 桌面端目标即 Chromium，无需跨浏览器矩阵
+        # --with-deps 自动安装系统级依赖（libnss3 等），避免 webServer 启动后浏览器启动失败
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E tests
+        # npm run e2e = playwright test
+        # playwright.config.ts 的 webServer 在 CI 中会自动启动 vite dev server (port 5173)
+        # 并在测试结束后关闭，无需在此手动管理
+        run: npm run e2e
+        env:
+          CI: 'true'
+
+      - name: Upload Playwright HTML report
+        # 无论 E2E 通过/失败都上传 HTML 报告，便于在 Actions UI 中下载查看失败详情
+        # always() 确保即使 Run E2E steps 失败也能上传
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload Playwright test results
+        # 仅在失败时上传 test-results（含失败截图/trace），减小成功运行的 artifact 体积
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore

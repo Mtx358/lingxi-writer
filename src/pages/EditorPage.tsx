@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ChevronLeft,
@@ -18,9 +18,17 @@ import {
   BookMarked,
   AlertTriangle,
   Wand2,
+  Settings,
+  IdCard,
+  Map,
+  GitBranch,
+  CalendarClock,
+  LayoutDashboard,
 } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '@/store/useAppStore';
 import { useAppHotkeys, type HotkeyHandler } from '@/hooks/useGlobalHotkeys';
+import { READING_SPEED_WPM } from '@/constants/config';
 import OutlinePanel from '@/components/editor/OutlinePanel';
 import TiptapEditor from '@/components/editor/TiptapEditor';
 import AIPanel from '@/components/editor/AIPanel';
@@ -28,33 +36,80 @@ import CharactersPanel from '@/components/editor/CharactersPanel';
 import SettingsPanel from '@/components/editor/SettingsPanel';
 import ForeshadowPanel from '@/components/editor/ForeshadowPanel';
 import MaterialsPanel from '@/components/editor/MaterialsPanel';
-import VersionHistoryPanel from '@/components/editor/VersionHistoryPanel';
-import ConflictPanel from '@/components/editor/ConflictPanel';
-import OutlinePolishPanel from '@/components/editor/OutlinePolishPanel';
-import SearchModal from '@/components/SearchModal';
-import InteractiveTour, { type TourStep } from '@/components/InteractiveTour';
+// 灵犀助手域面板：4 个模块仅在切到对应右侧 tab 时才渲染，与 OutlinePolishPanel 同样
+// 使用懒加载降低首屏代码体积
+const CoreSettingCardPanel = lazy(() => import('@/components/editor/CoreSettingCardPanel'));
+const BlueprintPanel = lazy(() => import('@/components/editor/BlueprintPanel'));
+const SubplotPanel = lazy(() => import('@/components/editor/SubplotPanel'));
+const UpdateSchedulePanel = lazy(() => import('@/components/editor/UpdateSchedulePanel'));
+// OutlinePolishPanel 含 8 个 tab、报告渲染、多个子组件，体积较大但仅在用户切到
+// 左侧"打磨"tab 才显示，懒加载可让首屏不拉取该部分代码
+const OutlinePolishPanel = lazy(() => import('@/components/editor/OutlinePolishPanel'));
+// 以下 5 个均为条件渲染的抽屉/模态，用户不点开就永远不渲染，懒加载收益最大
+const VersionHistoryPanel = lazy(() => import('@/components/editor/VersionHistoryPanel'));
+const ConflictPanel = lazy(() => import('@/components/editor/ConflictPanel'));
+const SearchModal = lazy(() => import('@/components/SearchModal'));
+const SettingsModal = lazy(() => import('@/components/SettingsModal'));
+const InteractiveTour = lazy(() => import('@/components/InteractiveTour'));
+import type { TourStep } from '@/components/InteractiveTour';
+import { safeLocalStorageGet, safeLocalStorageSet } from '@/lib/safeStorage';
+
+// 条件渲染组件的统一加载占位（轻量，避免空白闪烁）
+function ModalFallback() {
+  return (
+    <div className="flex items-center justify-center p-8 text-ink-500 text-sm">
+      <div className="w-4 h-4 border-2 border-amber-400/30 border-t-amber-400 rounded-full animate-spin" />
+    </div>
+  );
+}
 
 export default function EditorPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
-  const projects = useAppStore(s => s.projects);
-  const chapters = useAppStore(s => s.chapters);
-  const currentChapterId = useAppStore(s => s.currentChapterId);
-  const leftPanelCollapsed = useAppStore(s => s.leftPanelCollapsed);
-  const rightPanelCollapsed = useAppStore(s => s.rightPanelCollapsed);
-  const rightPanelTab = useAppStore(s => s.rightPanelTab);
-  const setLeftPanelCollapsed = useAppStore(s => s.setLeftPanelCollapsed);
-  const setRightPanelCollapsed = useAppStore(s => s.setRightPanelCollapsed);
-  const setRightPanelTab = useAppStore(s => s.setRightPanelTab);
-  const loadProjects = useAppStore(s => s.loadProjects);
-  const openProject = useAppStore(s => s.openProject);
-  const lastSavedAt = useAppStore(s => s.lastSavedAt);
+  // 12 个字段集中订阅：useShallow 浅比较，任一字段变化才触发重渲染。
+  // 数据字段（projects/chapters/currentChapterId/lastSavedAt/chapterCount）+ UI 状态
+  // （leftPanelCollapsed/rightPanelCollapsed/rightPanelTab）+ 5 个稳定 action setter，
+  // 浅比较对 action 永远命中缓存；对基本类型字段按值比较；对数组/对象按引用比较。
+  const {
+    projects,
+    chapters,
+    currentChapterId,
+    leftPanelCollapsed,
+    rightPanelCollapsed,
+    rightPanelTab,
+    setLeftPanelCollapsed,
+    setRightPanelCollapsed,
+    setRightPanelTab,
+    loadProjects,
+    openProject,
+    lastSavedAt,
+    chapterCount,
+  } = useAppStore(
+    useShallow(s => ({
+      projects: s.projects,
+      chapters: s.chapters,
+      currentChapterId: s.currentChapterId,
+      leftPanelCollapsed: s.leftPanelCollapsed,
+      rightPanelCollapsed: s.rightPanelCollapsed,
+      rightPanelTab: s.rightPanelTab,
+      setLeftPanelCollapsed: s.setLeftPanelCollapsed,
+      setRightPanelCollapsed: s.setRightPanelCollapsed,
+      setRightPanelTab: s.setRightPanelTab,
+      loadProjects: s.loadProjects,
+      openProject: s.openProject,
+      lastSavedAt: s.lastSavedAt,
+      // P-L2: 章节计数改为 selector 内计算，zustand 仅在返回值（基本类型）变化时重算/重渲染，
+      // 避免每次 render 都 filter chapters
+      chapterCount: s.chapters.filter(c => c.levelType === 'chapter').length,
+    })),
+  );
 
   const [showSearch, setShowSearch] = useState(false);
   const [showVersionPanel, setShowVersionPanel] = useState(false);
   const [showConflictPanel, setShowConflictPanel] = useState(false);
   const [leftPanelTab, setLeftPanelTab] = useState<'outline' | 'polish'>('outline');
   const [showTour, setShowTour] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   // O4: 引导步骤。prepare 回调在进入该步前自动展开/激活目标面板，
   // 避免面板收起时 getBoundingClientRect 返回 0 宽高导致引导跳过该步。
@@ -120,15 +175,38 @@ export default function EditorPage() {
   ], []);
   useAppHotkeys(extraHotkeys);
 
+  // P-M1: 右侧面板内容用 useMemo 缓存，避免每次 render 都通过 IIFE 重建 switch 闭包。
+  // 仅 rightPanelTab 变化时重算，其余 render 直接复用上一次结果。
+  const rightPanelContent = useMemo(() => {
+    switch (rightPanelTab) {
+      case 'ai': return <AIPanel />;
+      case 'characters': return <CharactersPanel />;
+      case 'settings': return <SettingsPanel />;
+      case 'foreshadows': return <ForeshadowPanel />;
+      case 'materials': return <MaterialsPanel />;
+      case 'coreSetting': return <CoreSettingCardPanel />;
+      case 'blueprint': return <BlueprintPanel />;
+      case 'subplot': return <SubplotPanel />;
+      case 'updateSchedule': return <UpdateSchedulePanel />;
+      default: return <AIPanel />;
+    }
+  }, [rightPanelTab]);
+
   // openProject 竞态守卫：快速切换项目时，旧请求 await 完成后通过 id 比对丢弃过期结果
   const openRequestId = useRef(0);
   // 标记 projects 是否已加载完成，用于区分“加载中”与“项目不存在”
   const [projectsLoaded, setProjectsLoaded] = useState(false);
+  // 加载失败标记：与"项目不存在"区分。loadProjects/openProject 抛错时若只置 projectsLoaded(true)，
+  // UI 会渲染"项目不存在"分支，误导用户以为项目被删除；这里独立标记，命中时展示重试入口
+  const [loadError, setLoadError] = useState(false);
+  // 重试计数：作为 useEffect 依赖，点"重试"时 +1 触发重新加载
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     if (!projectId) return;
     const id = ++openRequestId.current;
     setProjectsLoaded(false);
+    setLoadError(false);
     (async () => {
       try {
         await loadProjects();
@@ -137,11 +215,15 @@ export default function EditorPage() {
         if (id !== openRequestId.current) return;
       } catch (e) {
         console.error('加载项目失败:', e);
+        // 区分加载失败与项目不存在：仅当加载阶段抛错时置 loadError，
+        // 不再 fallthrough 到 setProjectsLoaded(true) 触发"项目不存在"分支
+        if (id === openRequestId.current) setLoadError(true);
+        return;
       }
       if (id !== openRequestId.current) return;
       setProjectsLoaded(true);
     })();
-  }, [projectId, loadProjects, openProject]);
+  }, [projectId, loadProjects, openProject, retryCount]);
 
   const currentProject = projects.find(p => p.id === projectId);
 
@@ -149,25 +231,49 @@ export default function EditorPage() {
   // 避免编辑/保存导致 currentProject 引用变化时重复触发
   useEffect(() => {
     if (!currentProject) return;
-    if (localStorage.getItem('has_seen_editor_tour')) return;
+    if (safeLocalStorageGet('has_seen_editor_tour')) return;
     const timer = setTimeout(() => setShowTour(true), 500);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id]);
 
   const handleTourComplete = () => {
-    localStorage.setItem('has_seen_editor_tour', 'true');
+    safeLocalStorageSet('has_seen_editor_tour', 'true');
     setShowTour(false);
   };
 
   const handleTourSkip = () => {
-    localStorage.setItem('has_seen_editor_tour', 'true');
+    safeLocalStorageSet('has_seen_editor_tour', 'true');
     setShowTour(false);
   };
 
 
 
   if (!currentProject) {
+    if (loadError) {
+      // 加载失败分支：与"项目不存在"区分。提供"重试"按钮，点击触发 retryCount+1
+      // 重新走 useEffect，避免用户误以为项目被删除
+      return (
+        <div className="h-screen w-screen flex flex-col items-center justify-center bg-ink-950 gap-4">
+          <AlertTriangle className="w-8 h-8 text-amber-400" />
+          <div className="text-ink-300">项目加载失败，请重试</div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setRetryCount(c => c + 1)}
+              className="btn btn-primary"
+            >
+              重试
+            </button>
+            <button
+              onClick={() => navigate('/')}
+              className="btn btn-secondary"
+            >
+              返回首页
+            </button>
+          </div>
+        </div>
+      );
+    }
     if (!projectsLoaded) {
       return (
         <div className="h-screen w-screen flex items-center justify-center bg-ink-950">
@@ -201,8 +307,9 @@ export default function EditorPage() {
             onClick={() => navigate('/')}
             className="p-1.5 rounded-md text-ink-400 hover:text-ink-200 hover:bg-ink-800 transition-colors"
             title="返回项目列表"
+            aria-label="返回项目列表"
           >
-            <Home className="w-4 h-4" />
+            <Home className="w-4 h-4" aria-hidden="true" />
           </button>
           <div className="w-px h-5 bg-ink-700" />
           <div className="flex items-center gap-2">
@@ -222,8 +329,9 @@ export default function EditorPage() {
             onClick={() => setShowSearch(true)}
             className="p-1.5 rounded-md text-ink-400 hover:text-ink-200 hover:bg-ink-800 transition-colors"
             title="全局搜索 (Ctrl+K)"
+            aria-label="全局搜索"
           >
-            <Search className="w-4 h-4" />
+            <Search className="w-4 h-4" aria-hidden="true" />
           </button>
           <button
             onClick={() => {
@@ -237,8 +345,9 @@ export default function EditorPage() {
                 : 'text-ink-400 hover:text-ink-200 hover:bg-ink-800'
             }`}
             title="版本历史"
+            aria-label="版本历史"
           >
-            <History className="w-4 h-4" />
+            <History className="w-4 h-4" aria-hidden="true" />
           </button>
           <button
             onClick={() => {
@@ -251,29 +360,55 @@ export default function EditorPage() {
                 : 'text-ink-400 hover:text-ink-200 hover:bg-ink-800'
             }`}
             title="冲突检测"
+            aria-label="冲突检测"
           >
-            <AlertTriangle className="w-4 h-4" />
+            <AlertTriangle className="w-4 h-4" aria-hidden="true" />
+          </button>
+          <button
+            className="p-1.5 rounded-md text-ink-400 hover:text-ink-200 hover:bg-ink-800 transition-colors"
+            title="总控仪表盘"
+            aria-label="总控仪表盘"
+            onClick={() => navigate(`/project/${projectId}/dashboard`)}
+          >
+            <LayoutDashboard className="w-4 h-4" aria-hidden="true" />
           </button>
           <button
             className="p-1.5 rounded-md text-ink-400 hover:text-ink-200 hover:bg-ink-800 transition-colors"
             title="审稿中心"
+            aria-label="审稿中心"
             onClick={() => navigate(`/project/${projectId}/review`)}
           >
-            <BarChart3 className="w-4 h-4" />
+            <BarChart3 className="w-4 h-4" aria-hidden="true" />
           </button>
           <div className="w-px h-5 bg-ink-700 mx-1" />
           <button
             className="p-1.5 rounded-md text-ink-400 hover:text-ink-200 hover:bg-ink-800 transition-colors"
             title="导出"
+            aria-label="导出"
             onClick={() => navigate(`/project/${projectId}/export`)}
           >
-            <Download className="w-4 h-4" />
+            <Download className="w-4 h-4" aria-hidden="true" />
           </button>
           <button
+            onClick={() => setShowSettings(true)}
             className="p-1.5 rounded-md text-ink-400 hover:text-ink-200 hover:bg-ink-800 transition-colors"
-            title="保存"
+            title="软件设置"
+            aria-label="软件设置"
           >
-            <Save className="w-4 h-4" />
+            <Settings className="w-4 h-4" aria-hidden="true" />
+          </button>
+          <button
+            className="p-1.5 rounded-md text-ink-400 hover:text-ink-200 hover:bg-ink-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title="保存（Ctrl+S）"
+            aria-label="保存"
+            onClick={() => {
+              // 立即触发保存并显示反馈；失败时 saveProject 内部会弹 toast
+              if (!currentChapterId) return;
+              void useAppStore.getState().saveProject();
+            }}
+            disabled={!currentChapterId}
+          >
+            <Save className="w-4 h-4" aria-hidden="true" />
           </button>
         </div>
       </header>
@@ -320,13 +455,18 @@ export default function EditorPage() {
             <button
               onClick={() => setLeftPanelCollapsed(true)}
               className="px-2 text-ink-500 hover:text-ink-300 hover:bg-ink-800 transition-colors"
+              aria-label="折叠大纲面板"
             >
-              <ChevronLeft className="w-4 h-4" />
+              <ChevronLeft className="w-4 h-4" aria-hidden="true" />
             </button>
           </div>
           <div className="flex-1 overflow-y-auto">
             {leftPanelTab === 'outline' && <OutlinePanel />}
-            {leftPanelTab === 'polish' && <OutlinePolishPanel />}
+            {leftPanelTab === 'polish' && (
+              <Suspense fallback={<ModalFallback />}>
+                <OutlinePolishPanel />
+              </Suspense>
+            )}
           </div>
         </aside>
 
@@ -335,8 +475,9 @@ export default function EditorPage() {
           <button
             onClick={() => setLeftPanelCollapsed(false)}
             className="absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1 bg-ink-800 border border-l-0 border-ink-700 rounded-r-md text-ink-400 hover:text-ink-200 hover:bg-ink-700 transition-colors"
+            aria-label="展开大纲面板"
           >
-            <ChevronRight className="w-4 h-4" />
+            <ChevronRight className="w-4 h-4" aria-hidden="true" />
           </button>
         )}
 
@@ -360,6 +501,10 @@ export default function EditorPage() {
               { id: 'settings', icon: Globe, label: '设定' },
               { id: 'foreshadows', icon: Flag, label: '伏笔' },
               { id: 'materials', icon: Lightbulb, label: '素材' },
+              { id: 'coreSetting', icon: IdCard, label: '设定卡' },
+              { id: 'blueprint', icon: Map, label: '蓝图' },
+              { id: 'subplot', icon: GitBranch, label: '支线' },
+              { id: 'updateSchedule', icon: CalendarClock, label: '存稿' },
             ].map(tab => (
               <button
                 key={tab.id}
@@ -381,23 +526,19 @@ export default function EditorPage() {
             <button
               onClick={() => setRightPanelCollapsed(true)}
               className="px-2 text-ink-500 hover:text-ink-300 hover:bg-ink-800 transition-colors"
+              aria-label="折叠右侧面板"
             >
-              <ChevronRight className="w-4 h-4" />
+              <ChevronRight className="w-4 h-4" aria-hidden="true" />
             </button>
           </div>
 
           {/* Panel Content */}
           <div className="flex-1 overflow-y-auto">
-            {(() => {
-              switch (rightPanelTab) {
-                case 'ai': return <AIPanel />;
-                case 'characters': return <CharactersPanel />;
-                case 'settings': return <SettingsPanel />;
-                case 'foreshadows': return <ForeshadowPanel />;
-                case 'materials': return <MaterialsPanel />;
-                default: return <AIPanel />;
-              }
-            })()}
+            {/* 4 个灵犀面板为 lazy 加载，需 Suspense 接管首次加载时的 fallback，
+                避免切到对应 tab 时 React 抛出 Suspense 异常无 handler 导致白屏 */}
+            <Suspense fallback={<ModalFallback />}>
+              {rightPanelContent}
+            </Suspense>
           </div>
         </aside>
 
@@ -406,8 +547,9 @@ export default function EditorPage() {
           <button
             onClick={() => setRightPanelCollapsed(false)}
             className="absolute right-0 top-1/2 -translate-y-1/2 z-10 p-1 bg-ink-800 border border-r-0 border-ink-700 rounded-l-md text-ink-400 hover:text-ink-200 hover:bg-ink-700 transition-colors"
+            aria-label="展开右侧面板"
           >
-            <ChevronLeft className="w-4 h-4" />
+            <ChevronLeft className="w-4 h-4" aria-hidden="true" />
           </button>
         )}
       </div>
@@ -415,14 +557,14 @@ export default function EditorPage() {
       {/* Status Bar */}
       <footer className="relative z-20 h-7 border-t border-ink-800/50 flex items-center justify-between px-4 bg-ink-900/80 backdrop-blur-sm">
         <div className="flex items-center gap-4 text-xs text-ink-500">
-          <span>共 {chapters.filter(c => c.levelType === 'chapter').length} 章</span>
+          <span>共 {chapterCount} 章</span>
           <span>{currentProject.totalWords.toLocaleString()} 字</span>
         </div>
         <div className="flex items-center gap-4 text-xs text-ink-500">
           {currentChapter && (
             <>
               <span>{currentChapter.wordCount.toLocaleString()} 字</span>
-              <span>约 {Math.ceil(currentChapter.wordCount / 400)} 分钟阅读</span>
+              <span>约 {Math.ceil(currentChapter.wordCount / READING_SPEED_WPM)} 分钟阅读</span>
             </>
           )}
           <span className="text-emerald-400 flex items-center gap-1">
@@ -443,7 +585,9 @@ export default function EditorPage() {
             onClick={() => setShowVersionPanel(false)}
           />
           <div className="absolute right-0 top-0 bottom-0 w-96 bg-ink-900 border-l border-ink-800 shadow-large pointer-events-auto animate-slide-left">
-            <VersionHistoryPanel onClose={() => setShowVersionPanel(false)} />
+            <Suspense fallback={<ModalFallback />}>
+              <VersionHistoryPanel onClose={() => setShowVersionPanel(false)} />
+            </Suspense>
           </div>
         </div>
       )}
@@ -456,21 +600,36 @@ export default function EditorPage() {
             onClick={() => setShowConflictPanel(false)}
           />
           <div className="absolute right-0 top-0 bottom-0 w-96 bg-ink-900 border-l border-ink-800 shadow-large pointer-events-auto animate-slide-left">
-            <ConflictPanel onClose={() => setShowConflictPanel(false)} />
+            <Suspense fallback={<ModalFallback />}>
+              <ConflictPanel onClose={() => setShowConflictPanel(false)} />
+            </Suspense>
           </div>
         </div>
       )}
 
       {/* Search Modal */}
-      {showSearch && <SearchModal onClose={() => setShowSearch(false)} />}
+      {showSearch && (
+        <Suspense fallback={<ModalFallback />}>
+          <SearchModal onClose={() => setShowSearch(false)} />
+        </Suspense>
+      )}
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <Suspense fallback={<ModalFallback />}>
+          <SettingsModal onClose={() => setShowSettings(false)} />
+        </Suspense>
+      )}
 
       {/* Interactive Tour (首次进入编辑器) */}
       {showTour && (
-        <InteractiveTour
-          steps={editorTourSteps}
-          onComplete={handleTourComplete}
-          onSkip={handleTourSkip}
-        />
+        <Suspense fallback={null}>
+          <InteractiveTour
+            steps={editorTourSteps}
+            onComplete={handleTourComplete}
+            onSkip={handleTourSkip}
+          />
+        </Suspense>
       )}
     </div>
   );

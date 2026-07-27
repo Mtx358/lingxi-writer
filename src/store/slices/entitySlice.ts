@@ -10,7 +10,11 @@ import type { StateCreator } from 'zustand';
 import type { AppState } from '../appState';
 import type { Character, SettingCategory, SettingItem, Foreshadow, Material } from '@/types';
 import { DEFAULT_CHARACTER_ROLE, DEFAULT_FORESHADOW_STATUS, DEFAULT_FORESHADOW_PRIORITY, DEFAULT_MATERIAL_TYPE } from '@/types';
-import { generateId, markDirty } from '@/utils/storage';
+import { generateId, markDirty, storage } from '@/utils/storage';
+import { conflictDetector } from '@/utils/conflictDetector';
+import { escapeRegExp } from '@/lib/regexUtils';
+import { logError } from '@/utils/rendererLogger';
+import { registerProjectCleanup } from '../projectCleanup';
 
 type EntitySlice = Pick<AppState,
   | 'characters' | 'settingCategories' | 'settingItems' | 'foreshadows' | 'materials'
@@ -22,20 +26,46 @@ type EntitySlice = Pick<AppState,
 
 // 模块级缓存：chapterId -> { html, plain }，避免同一章节被多个伏笔重复去 HTML。
 // F 个伏笔 × C 个章节时，去 HTML 至多执行 C 次（仅在章节内容变更时增量更新），而非 F*C 次。
+// LRU 策略：命中时 bump 到队尾，超过上限淘汰队首（与 imageCache 一致）
+const CHAPTER_PLAIN_TEXT_CACHE_MAX = 64;
 const chapterPlainTextCache = new Map<string, { html: string; plain: string }>();
+
+export function setChapterPlainTextCache(chapterId: string, value: { html: string; plain: string }): void {
+  // LRU: 命中时先删再插（移到末尾）
+  chapterPlainTextCache.delete(chapterId);
+  chapterPlainTextCache.set(chapterId, value);
+  // 超限时淘汰最老条目（Map 迭代顺序 = 插入顺序）
+  if (chapterPlainTextCache.size > CHAPTER_PLAIN_TEXT_CACHE_MAX) {
+    const oldest = chapterPlainTextCache.keys().next().value;
+    if (oldest !== undefined) chapterPlainTextCache.delete(oldest);
+  }
+}
+
+export function getChapterPlainTextCache(chapterId: string): { html: string; plain: string } | undefined {
+  const value = chapterPlainTextCache.get(chapterId);
+  if (value) {
+    // LRU bump: 移到末尾
+    chapterPlainTextCache.delete(chapterId);
+    chapterPlainTextCache.set(chapterId, value);
+  }
+  return value;
+}
 
 // 清空章节纯文本缓存：项目切换/关闭时调用，避免上一项目的章节缓存残留导致伏笔重算基于过期文本
 export const clearChapterPlainTextCache = (): void => {
   chapterPlainTextCache.clear();
 };
 
+// 项目切换时自动清理章节纯文本缓存
+registerProjectCleanup(clearChapterPlainTextCache);
+
 const getChapterPlainText = (chapterId: string, html: string): string => {
-  const cached = chapterPlainTextCache.get(chapterId);
+  const cached = getChapterPlainTextCache(chapterId);
   if (cached && cached.html === html) {
     return cached.plain; // 章节内容未变，复用已缓存的纯文本
   }
   const plain = (html || '').replace(/<[^>]*>/g, '');
-  chapterPlainTextCache.set(chapterId, { html, plain });
+  setChapterPlainTextCache(chapterId, { html, plain });
   return plain;
 };
 
@@ -71,7 +101,7 @@ export const createEntitySlice: StateCreator<AppState, [], [], EntitySlice> = (s
   },
 
   deleteCharacter: (characterId: string) => {
-    const { characters, foreshadows, chapters, currentProjectId } = get();
+    const { characters, foreshadows, chapters, subplots, currentProjectId, projects } = get();
     if (!currentProjectId) return;
     // 1. 删除角色本身 + 清理其他角色的关系引用
     const updatedCharacters = characters
@@ -85,12 +115,38 @@ export const createEntitySlice: StateCreator<AppState, [], [], EntitySlice> = (s
       ...f,
       relatedCharacters: (f.relatedCharacters || []).filter(id => id !== characterId),
     }));
-    // 3. 清理章节中的角色聚焦引用
-    const updatedChapters = chapters.map(c => ({
-      ...c,
-      characterFocus: c.characterFocus ? c.characterFocus.filter(id => id !== characterId) : c.characterFocus,
-    }));
-    set({ characters: updatedCharacters, foreshadows: updatedForeshadows, chapters: updatedChapters });
+    // 3. 清理章节中的角色聚焦引用 + MentionExtension 节点（C3-02）
+    //    mention 节点形如 <span data-mention data-id="characterId">角色名</span>，
+    //    删除角色后未清理会形成悬空引用。用正则替换避免对每章做 DOM 解析
+    const mentionPattern = new RegExp(
+      `<span[^>]*data-mention[^>]*data-id="${escapeRegExp(characterId)}"[^>]*>[^<]*</span>`,
+      'g'
+    );
+    const updatedChapters = chapters.map(c => {
+      const characterFocus = c.characterFocus ? c.characterFocus.filter(id => id !== characterId) : c.characterFocus;
+      if (!c.content || !c.content.includes(`data-id="${characterId}"`)) {
+        return { ...c, characterFocus };
+      }
+      return { ...c, characterFocus, content: c.content.replace(mentionPattern, '') };
+    });
+    // 4. 清理支线中的角色引用：relatedCharacters 含被删角色 ID 会形成悬空引用
+    let updatedSubplots = subplots;
+    if (subplots.some(s => (s.relatedCharacters || []).includes(characterId))) {
+      updatedSubplots = subplots.map(s => ({
+        ...s,
+        relatedCharacters: (s.relatedCharacters || []).filter(id => id !== characterId),
+      }));
+    }
+    // M10 修复：将顶层 subplots 与 projects[].subplots 合并到单次 set，
+    // 避免两次 set 之间订阅者观察到不一致中间态（顶层已更新、projects 未更新）
+    const updatedProjects = updatedSubplots !== subplots
+      ? projects.map(p => p.id === currentProjectId ? { ...p, subplots: updatedSubplots, updatedAt: new Date().toISOString() } : p)
+      : projects;
+    set({ characters: updatedCharacters, foreshadows: updatedForeshadows, chapters: updatedChapters, subplots: updatedSubplots, projects: updatedProjects });
+    if (updatedSubplots !== subplots) {
+      void storage.patchProjects({ type: 'update', project: updatedProjects.find(p => p.id === currentProjectId)! })
+        .catch(e => logError('patchProjects failed', e, { slice: 'entity', action: 'deleteCharacter', projectId: currentProjectId }));
+    }
     markDirty();
   },
 
@@ -128,6 +184,8 @@ export const createEntitySlice: StateCreator<AppState, [], [], EntitySlice> = (s
         }))
       : foreshadows;
     set({ settingCategories: updatedCategories, settingItems: updatedItems, foreshadows: updatedForeshadows });
+    // 同步 conflictDetector，避免冲突列表残留引用已删除设定项的陈旧 issue（C3-04）
+    conflictDetector.setSettings(updatedItems);
     markDirty();
   },
 
@@ -165,6 +223,8 @@ export const createEntitySlice: StateCreator<AppState, [], [], EntitySlice> = (s
       relatedSettings: (f.relatedSettings || []).filter(id => id !== itemId),
     }));
     set({ settingItems: updated, foreshadows: updatedForeshadows });
+    // 同步 conflictDetector，避免冲突列表残留引用已删除设定项的陈旧 issue（C3-04）
+    conflictDetector.setSettings(updated);
     markDirty();
   },
 
@@ -210,10 +270,27 @@ export const createEntitySlice: StateCreator<AppState, [], [], EntitySlice> = (s
   },
 
   deleteForeshadow: (foreshadowId: string) => {
-    const { foreshadows, currentProjectId } = get();
+    const { foreshadows, subplots, currentProjectId, projects } = get();
     if (!currentProjectId) return;
     const updated = foreshadows.filter(f => f.id !== foreshadowId);
-    set({ foreshadows: updated });
+    // 级联清理支线中的伏笔引用：relatedForeshadows 含被删伏笔 ID 会形成悬空引用
+    let updatedSubplots = subplots;
+    if (subplots.some(s => (s.relatedForeshadows || []).includes(foreshadowId))) {
+      updatedSubplots = subplots.map(s => ({
+        ...s,
+        relatedForeshadows: (s.relatedForeshadows || []).filter(id => id !== foreshadowId),
+      }));
+    }
+    // M10 修复：将顶层 subplots 与 projects[].subplots 合并到单次 set，
+    // 避免两次 set 之间订阅者观察到不一致中间态（顶层已更新、projects 未更新）
+    const updatedProjects = updatedSubplots !== subplots
+      ? projects.map(p => p.id === currentProjectId ? { ...p, subplots: updatedSubplots, updatedAt: new Date().toISOString() } : p)
+      : projects;
+    set({ foreshadows: updated, subplots: updatedSubplots, projects: updatedProjects });
+    if (updatedSubplots !== subplots) {
+      void storage.patchProjects({ type: 'update', project: updatedProjects.find(p => p.id === currentProjectId)! })
+        .catch(e => logError('patchProjects failed', e, { slice: 'entity', action: 'deleteForeshadow', projectId: currentProjectId }));
+    }
     markDirty();
   },
 
@@ -224,10 +301,29 @@ export const createEntitySlice: StateCreator<AppState, [], [], EntitySlice> = (s
     const { foreshadows, chapters, currentChapterId } = get();
     if (foreshadows.length === 0 || chapters.length === 0) return;
 
-    // 仅按 levelType === 'chapter' 排序，作为"阅读顺序"基线
-    const flatChapters = chapters
-      .filter(c => c.levelType === 'chapter')
-      .sort((a, b) => a.order - b.order);
+    // 按 DFS 全局阅读顺序展开章节：order 是兄弟内序号，多卷项目下不同父级的
+    // chapter 的 order 会重叠（Book1 下 A/B order 0,1 与 Book2 下 C/D order 0,1），
+    // 单纯 sort 后变 [A,C,B,D]，破坏阅读顺序。需从 root(parentId=null) 起按 order
+    // 递归遍历整棵树，再取 levelType==='chapter' 的叶子，得到正确的全局阅读顺序。
+    const childrenByParent = new Map<string | null, typeof chapters>();
+    for (const c of chapters) {
+      const key = c.parentId;
+      const list = childrenByParent.get(key);
+      if (list) list.push(c);
+      else childrenByParent.set(key, [c]);
+    }
+    for (const list of childrenByParent.values()) {
+      list.sort((a, b) => a.order - b.order);
+    }
+    const flatChapters: typeof chapters = [];
+    const dfsVisit = (parentId: string | null) => {
+      const children = childrenByParent.get(parentId) || [];
+      for (const child of children) {
+        if (child.levelType === 'chapter') flatChapters.push(child);
+        dfsVisit(child.id);
+      }
+    };
+    dfsVisit(null);
     if (flatChapters.length === 0) return;
 
     // 清理已被删除章节的缓存条目，避免缓存无限增长

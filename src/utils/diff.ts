@@ -1,5 +1,6 @@
 import DOMPurify from 'dompurify';
 import { DIFF_CHAR_LIMIT } from '@/constants/config';
+import { escapeHtml } from '@/lib/htmlUtils';
 
 /** 行级/块级 LCS 的最大输入长度，超过则截断以避免 O(m×n) DP 在大文档上性能退化 */
 const DIFF_LINE_LIMIT = 2000;
@@ -84,14 +85,21 @@ function computeLCS(a: string[], b: string[]): string[] {
   }
   const m = aTrunc.length;
   const n = bTrunc.length;
-  const dp: number[][] = Array(m + 1).fill(null).map(() => Array(n + 1).fill(0));
+  // H8 性能修复：用一维 Uint16Array 替代 number[][]，内存从 (m+1)*(n+1)*8 字节降至 *2 字节。
+  // 2000×2000 场景：32MB → 8MB，减少 75% 内存分配。LCS 长度 ≤ min(m,n) ≤ 2000，fits in uint16。
+  // 索引：dp[i*(n+1)+j]，等价于原 dp[i][j]
+  const dp = new Uint16Array((m + 1) * (n + 1));
 
   for (let i = 1; i <= m; i++) {
+    const rowBase = i * (n + 1);
+    const prevRowBase = (i - 1) * (n + 1);
     for (let j = 1; j <= n; j++) {
       if (aTrunc[i - 1] === bTrunc[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1] + 1;
+        dp[rowBase + j] = dp[prevRowBase + (j - 1)] + 1;
       } else {
-        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+        const up = dp[prevRowBase + j];
+        const left = dp[rowBase + (j - 1)];
+        dp[rowBase + j] = up > left ? up : left;
       }
     }
   }
@@ -104,10 +112,11 @@ function computeLCS(a: string[], b: string[]): string[] {
       lcs.unshift(aTrunc[i - 1]);
       i--;
       j--;
-    } else if (dp[i - 1][j] > dp[i][j - 1]) {
-      i--;
     } else {
-      j--;
+      const up = dp[(i - 1) * (n + 1) + j];
+      const left = dp[i * (n + 1) + (j - 1)];
+      if (up > left) i--;
+      else j--;
     }
   }
 
@@ -322,15 +331,6 @@ export function htmlToBlocks(html: string): HtmlBlock[] {
   return blocks;
 }
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 export interface HtmlBlockDiff {
   type: 'added' | 'removed' | 'unchanged' | 'modified';
   leftBlock?: HtmlBlock;
@@ -474,5 +474,7 @@ export function applyHtmlDiffRejections(
     }
   });
 
-  return outputBlocks.join('');
+  // 防御纵深：拼接后再次消毒。虽然 htmlToBlocks 已对输入消毒，但 outerHTML 序列化 +
+  // 重新拼接理论上可能引入未消毒片段（未来回归或浏览器解析差异），统一走 DOMPurify 兜底
+  return DOMPurify.sanitize(outputBlocks.join(''));
 }

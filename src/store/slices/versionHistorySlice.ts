@@ -10,6 +10,7 @@ import type { AppState } from '../appState';
 import type { ChapterVersion, Chapter } from '@/types';
 import { CHAPTER_STATUSES } from '@/types';
 import { generateId, markDirty, countWords, storage } from '@/utils/storage';
+import { logError } from '@/utils/rendererLogger';
 import { HISTORY_MAX_LENGTH } from '@/constants/config';
 
 type VersionHistorySlice = Pick<AppState,
@@ -47,8 +48,20 @@ export const createVersionHistorySlice: StateCreator<AppState, [], [], VersionHi
     if (!chapter) return;
 
     const chapterVersions = versions[chapterId] || [];
+    // M12 修复：内容与最近一次版本完全相同时跳过快照创建。
+    // 反复 Ctrl+S（未修改正文）不应产生重复快照，否则会挤占 MAX_VERSIONS_PER_CHAPTER
+    // 上限、淘汰有价值的旧版本。仅比较 content：元数据（title/status 等）变更
+    // 不应触发新快照（版本恢复以正文为主，元数据随正文恢复一并写入）。
+    if (chapterVersions.length > 0) {
+      const latest = chapterVersions[chapterVersions.length - 1];
+      if (latest.content === chapter.content) return;
+    }
     // trim 后 length 会回落，直接用 length+1 会与历史版本号重复；取最大 version + 1 保证单调递增
-    const maxVersion = chapterVersions.reduce((max, v) => Math.max(max, v.version), 0);
+    // 防御 v.version 为 undefined（旧数据/损坏数据）：Math.max(max, undefined) 返回 NaN 会污染后续版本号
+    const maxVersion = chapterVersions.reduce(
+      (max, v) => Math.max(max, typeof v.version === 'number' && !Number.isNaN(v.version) ? v.version : 0),
+      0,
+    );
     const newVersion: ChapterVersion = {
       id: generateId(),
       chapterId,
@@ -78,7 +91,7 @@ export const createVersionHistorySlice: StateCreator<AppState, [], [], VersionHi
   },
 
   restoreVersion: (chapterId: string, versionId: string) => {
-    const { versions, chapters, currentProjectId, contentEpoch } = get();
+    const { versions, chapters, currentProjectId, contentEpoch, projects } = get();
     if (!currentProjectId) return;
     const chapterVersions = versions[chapterId] || [];
     const version = chapterVersions.find(v => v.id === versionId);
@@ -91,7 +104,11 @@ export const createVersionHistorySlice: StateCreator<AppState, [], [], VersionHi
 
     // 1. 保存当前内容作为恢复前备份版本（内联到单次 set，避免独立 set 产生中间订阅状态）
     // trim 后 length 会回落，直接用 length+1 会与历史版本号重复；取最大 version + 1 保证单调递增
-    const maxVersion = chapterVersions.reduce((max, v) => Math.max(max, v.version), 0);
+    // 防御 v.version 为 undefined（旧数据/损坏数据）：Math.max(max, undefined) 返回 NaN 会污染后续版本号
+    const maxVersion = chapterVersions.reduce(
+      (max, v) => Math.max(max, typeof v.version === 'number' && !Number.isNaN(v.version) ? v.version : 0),
+      0,
+    );
     const backupVersion: ChapterVersion = {
       id: generateId(),
       chapterId,
@@ -134,19 +151,39 @@ export const createVersionHistorySlice: StateCreator<AppState, [], [], VersionHi
         : c
     );
 
-    // 3. 一次性提交：chapters + contentEpoch + versions，避免 4 次独立 set 让订阅者观察到中间状态
+    // 3. 同步 project.totalWords：恢复版本只更新了 chapter.wordCount，
+    // 顶栏字数（Home.tsx / EditorPage 读 project.totalWords）会与实际不一致。
+    // 参考 chapterSlice.updateChapterContent 重算并写回 projects。
+    const totalWords = updatedChapters.reduce((sum, c) => sum + (c.wordCount || 0), 0);
+    const updatedProjects = projects.map(p =>
+      p.id === currentProjectId ? { ...p, totalWords } : p
+    );
+
+    // 4. 一次性提交：chapters + contentEpoch + versions + projects，避免独立 set 让订阅者观察到中间状态
     set({
       chapters: updatedChapters,
       versions: updatedVersions,
+      projects: updatedProjects,
       contentEpoch: contentEpoch + 1,
     });
     markDirty();
 
     // 保留原 updateChapterContent 的副作用：恢复草稿与伏笔重算（不产生 chapters/versions 的中间订阅状态）
+    // H1 事务原子性：set 已原子提交（chapters/versions/projects/contentEpoch 单次 set）。
+    // 后续 recomputeForeshadowMentions 为纯计算重算，若抛错不应让整个 restoreVersion 失败——
+    // 章节内容已恢复是核心目标，伏笔 mentions 陈旧会在下次章节编辑时自动重算修正。
     if (get().currentChapterId === chapterId) {
-      void storage.saveRecoveryDraft(currentProjectId, chapterId, version.content);
+      // 崩溃恢复草稿写入是异步磁盘 IO：失败时记录日志，避免 unhandledrejection
+      // （仿照 chapterSlice.updateChapterContent 的处理）
+      void storage.saveRecoveryDraft(currentProjectId, chapterId, version.content).catch(e => {
+        logError('saveRecoveryDraft failed', e, { projectId: currentProjectId, chapterId });
+      });
     }
-    get().recomputeForeshadowMentions();
+    try {
+      get().recomputeForeshadowMentions();
+    } catch (e) {
+      console.error('restoreVersion: recomputeForeshadowMentions failed, foreshadow mentions may be stale until next chapter edit', e);
+    }
   },
 
   deleteVersion: (chapterId: string, versionId: string) => {
@@ -176,6 +213,8 @@ export const createVersionHistorySlice: StateCreator<AppState, [], [], VersionHi
       histories[chapterId] = { ...h, lastPush: now };
     }
     set({ histories });
+    // histories 变更需落盘，否则撤销/重做栈在下次启动时丢失
+    markDirty();
   },
 
   undo: (chapterId: string, currentContent: string) => {
@@ -188,6 +227,8 @@ export const createVersionHistorySlice: StateCreator<AppState, [], [], VersionHi
     const newFuture = [currentContent, ...h.future];
     histories[chapterId] = { past: newPast, future: newFuture, lastPush: h.lastPush };
     set({ histories });
+    // histories 变更需落盘，否则撤销栈在下次启动时丢失
+    markDirty();
     return prev;
   },
 
@@ -201,6 +242,8 @@ export const createVersionHistorySlice: StateCreator<AppState, [], [], VersionHi
     const newPast = [...h.past, currentContent];
     histories[chapterId] = { past: newPast, future: newFuture, lastPush: h.lastPush };
     set({ histories });
+    // histories 变更需落盘，否则重做栈在下次启动时丢失
+    markDirty();
     return next;
   },
 

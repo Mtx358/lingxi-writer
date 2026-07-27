@@ -4,13 +4,29 @@ import { generateId } from './storage';
 export class ConflictDetector {
   private characters: Character[] = [];
   private settings: SettingItem[] = [];
+  // RegExp 缓存：detectChapterConflicts 对每章每个角色变体都新建正则，
+  // 频繁调用时 GC 压力大；缓存按 variant 字符串复用，setCharacters 时清空
+  private regexCache = new Map<string, RegExp>();
 
   setCharacters(characters: Character[]) {
     this.characters = characters;
+    // 角色变更后缓存可能失效（旧变体不再需要），清空避免内存增长
+    this.regexCache.clear();
   }
 
   setSettings(settings: SettingItem[]) {
     this.settings = settings;
+  }
+
+  private getCachedRegExp(pattern: string): RegExp {
+    let re = this.regexCache.get(pattern);
+    if (!re) {
+      re = new RegExp(this.escapeRegExp(pattern), 'g');
+      this.regexCache.set(pattern, re);
+    }
+    // reset lastIndex（全局正则复用时必须）
+    re.lastIndex = 0;
+    return re;
   }
 
   detectChapterConflicts(chapter: Chapter): ConflictIssue[] {
@@ -31,7 +47,7 @@ export class ConflictDetector {
         );
         if (conflictsWithOther) return;
         // 要求出现次数 >= 2 才报警，避免偶然出现造成的噪音
-        const occurrences = (fullText.match(new RegExp(this.escapeRegExp(variant), 'g')) || []).length;
+        const occurrences = (fullText.match(this.getCachedRegExp(variant)) || []).length;
         if (occurrences < 2) return;
 
         const pos = fullText.indexOf(variant);

@@ -1,14 +1,15 @@
+import { escapeHtml } from '@/lib/htmlUtils';
+
 function htmlToText(html: string): string {
   if (typeof document !== 'undefined') {
-    const ta = document.createElement('textarea');
-    ta.innerHTML = html;
-    return ta.value;
+    // 用 DOMParser 在独立 document 中解析，避免 textarea breakout XSS：
+    // 原 `ta.innerHTML = html` 在 html 含 `</textarea><script>...` 时会提前闭合 textarea，
+    // 让 script 在主 document 上下文执行。DOMParser 创建的 document 是独立的，script 不会执行。
+    // textContent 会自动解码 HTML 实体（&amp; &lt; &nbsp; 等），与 textarea.value 行为一致。
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return doc.body.textContent || '';
   }
   return html.replace(/<[^>]*>/g, '');
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 export interface HumanizeOptions {
