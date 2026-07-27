@@ -14,7 +14,10 @@ dist-ssr
 
 # Electron build artifacts
 release
-electron/dist
+# 保留 electron/dist 下的 .cjs 构建产物（main.cjs / preload.cjs 是 electron-builder 必需的入口文件）
+# 只排除测试文件和中间 .js 文件
+electron/dist/**/*.test.js
+electron/dist/**/*.test.cjs
 electron-win-dist
 electron/*.exe
 *.nsis
