@@ -1,56 +1,79 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
 };
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.registerExportFileHandlers = registerExportFileHandlers;
-// 导出文件专用 IPC：导出路径与内部数据路径分离。
-// 依赖 ./shared（safeIpcHandle）、./security（路径校验）、../logger，不依赖其他 handler。
-// 编码归一化与 base64 解码已抽离到 ./exportFile.logic，便于单元测试。
-const node_path_1 = __importDefault(require("node:path"));
-const promises_1 = __importDefault(require("node:fs/promises"));
-const logger_1 = require("../logger");
-const shared_1 = require("./shared");
-const security_1 = require("./security");
-const exportFile_logic_1 = require("./exportFile.logic");
-// 问题背景：原导出流程复用 storage:writeFileBuffer（仅允许 userData 内路径），
-// 但用户通过 dialog:saveFile 选择的路径通常在 Documents/Desktop/Downloads，
-// 导致 isInsideDataDir 校验失败、文件静默未写入、渲染层未检查返回值误报"已导出"。
-//
-// 修复方案：新增 export:writeFile / export:writeFileBuffer 专用通道，
-// 路径白名单为用户可访问目录（home/Documents/Desktop/Downloads/userData），
-// 扩展名白名单为已知导出格式（.txt/.md/.html/.docx/.pdf/.epub），
-// 防止 XSS 后通过此通道写入可执行文件或系统目录。
-// 原 storage:writeFile / storage:writeFileBuffer 保持严格 userData 限制，供内部数据使用
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var exportFile_exports = {};
+__export(exportFile_exports, {
+  registerExportFileHandlers: () => registerExportFileHandlers
+});
+module.exports = __toCommonJS(exportFile_exports);
+var import_node_path = __toESM(require("node:path"), 1);
+var import_promises = __toESM(require("node:fs/promises"), 1);
+var import_logger = require("../logger");
+var import_shared = require("./shared");
+var import_security = require("./security");
+var import_exportFile = require("./exportFile.logic");
 function registerExportFileHandlers() {
-    (0, shared_1.safeIpcHandle)('export:writeFile', async (_event, filePath, data, encoding) => {
-        try {
-            const pathCheck = await (0, shared_1.validatePathAndAudit)('export:writeFile', filePath, security_1.isSafeExportFilePath, (0, security_1.getAllowedProjectFileRoots)());
-            if (!pathCheck.ok)
-                return false;
-            const resolved = node_path_1.default.resolve(filePath);
-            // 编码归一化：抽离为 buildExportWriteOptions 纯函数便于单元测试
-            await promises_1.default.writeFile(resolved, data, (0, exportFile_logic_1.buildExportWriteOptions)(encoding));
-            return true;
-        }
-        catch (e) {
-            logger_1.logger.error('export:writeFile failed', { error: e.message });
-            return false;
-        }
-    });
-    (0, shared_1.safeIpcHandle)('export:writeFileBuffer', async (_event, filePath, base64Data) => {
-        try {
-            const pathCheck = await (0, shared_1.validatePathAndAudit)('export:writeFileBuffer', filePath, security_1.isSafeExportFilePath, (0, security_1.getAllowedProjectFileRoots)());
-            if (!pathCheck.ok)
-                return false;
-            const resolved = node_path_1.default.resolve(filePath);
-            // base64 解码：抽离为 decodeBase64ToBuffer 纯函数便于单元测试
-            await promises_1.default.writeFile(resolved, (0, exportFile_logic_1.decodeBase64ToBuffer)(base64Data));
-            return true;
-        }
-        catch (e) {
-            logger_1.logger.error('export:writeFileBuffer failed', { error: e.message });
-            return false;
-        }
-    });
+  (0, import_shared.safeIpcHandle)("export:writeFile", async (_event, filePath, data, encoding) => {
+    try {
+      const pathCheck = await (0, import_shared.validatePathAndAudit)(
+        "export:writeFile",
+        filePath,
+        import_security.isSafeExportFilePath,
+        (0, import_security.getAllowedProjectFileRoots)()
+      );
+      if (!pathCheck.ok) return false;
+      const resolved = import_node_path.default.resolve(filePath);
+      await import_promises.default.writeFile(resolved, data, (0, import_exportFile.buildExportWriteOptions)(encoding));
+      return true;
+    } catch (e) {
+      import_logger.logger.error("export:writeFile failed", { error: e.message });
+      return false;
+    }
+  });
+  (0, import_shared.safeIpcHandle)("export:writeFileBuffer", async (_event, filePath, base64Data) => {
+    try {
+      const pathCheck = await (0, import_shared.validatePathAndAudit)(
+        "export:writeFileBuffer",
+        filePath,
+        import_security.isSafeExportFilePath,
+        (0, import_security.getAllowedProjectFileRoots)()
+      );
+      if (!pathCheck.ok) return false;
+      const resolved = import_node_path.default.resolve(filePath);
+      await import_promises.default.writeFile(resolved, (0, import_exportFile.decodeBase64ToBuffer)(base64Data));
+      return true;
+    } catch (e) {
+      import_logger.logger.error("export:writeFileBuffer failed", { error: e.message });
+      return false;
+    }
+  });
 }
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  registerExportFileHandlers
+});
