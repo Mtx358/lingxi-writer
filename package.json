@@ -24,10 +24,11 @@
     "e2e:install": "playwright install chromium",
     "audit:check": "npm audit --audit-level=high --omit=optional || true",
     "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron electron/dist/main.cjs\"",
-    "electron:build": "tsc -p tsconfig.electron.json && npm run build && electron-builder",
-    "electron:build:win": "tsc -p tsconfig.electron.json && npm run build && electron-builder --win",
-    "electron:build:mac": "tsc -p tsconfig.electron.json && npm run build && electron-builder --mac",
-    "electron:build:linux": "tsc -p tsconfig.electron.json && npm run build && electron-builder --linux",
+    "build:electron": "node scripts/build-electron.cjs",
+    "electron:build": "npm run build:electron && npm run build && electron-builder",
+    "electron:build:win": "npm run build:electron && npm run build && electron-builder --win",
+    "electron:build:mac": "npm run build:electron && npm run build && electron-builder --mac",
+    "electron:build:linux": "npm run build:electron && npm run build && electron-builder --linux",
     "prepare": "husky"
   },
   "lint-staged": {
@@ -80,6 +81,7 @@
     "babel-plugin-react-dev-locator": "^1.0.6",
     "concurrently": "^10.0.3",
     "cross-env": "^10.1.0",
+    "esbuild": "^0.23.0",
     "electron": "43.1.0",
     "electron-builder": "^26.15.3",
     "eslint": "^9.25.0",
