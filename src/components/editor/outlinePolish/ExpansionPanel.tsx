@@ -79,6 +79,29 @@ export function ExpansionPanel({
       ? `${base}\n\n【扩展方向·${opt.title}】${opt.content}`
       : `【扩展方向·${opt.title}】${opt.content}`;
     updateChapter(selectedChapter.id, { summary: newSummary });
+
+    // 同步更新后续关联章节：在 notes 中追加铺垫提示（文档：选中方案自动补全本节拍内容，同步更新后续关联章节）
+    if (opt.affectedChapterIds && opt.affectedChapterIds.length > 0) {
+      const allChapters = useAppStore.getState().chapters;
+      const noteTag = `【连锁·${opt.title}】需为本章增加铺垫以承接前文扩展`;
+      for (const affId of opt.affectedChapterIds) {
+        const aff = allChapters.find(c => c.id === affId);
+        if (!aff) continue;
+        const prevNotes = aff.notes || '';
+        // 避免重复追加同一提示
+        if (prevNotes.includes(noteTag)) continue;
+        const newNotes = prevNotes ? `${prevNotes}\n${noteTag}` : noteTag;
+        updateChapter(affId, { notes: newNotes });
+      }
+      const titles = opt.affectedChapterIds
+        .map(id => allChapters.find(c => c.id === id)?.title)
+        .filter(Boolean)
+        .join('、');
+      if (titles) {
+        // 轻量提示：已同步后续章节（避免引入 toast 依赖）
+        console.info(`[扩展器] 已为后续章节追加铺垫提示：${titles}`);
+      }
+    }
   };
 
   return (
@@ -96,6 +119,7 @@ export function ExpansionPanel({
       <div>
         <div className="text-[10px] text-ink-500 mb-1">选择章节</div>
         <select
+          aria-label="选择章节"
           value={selectedId || ''}
           onChange={e => {
             const id = e.target.value;
@@ -120,14 +144,14 @@ export function ExpansionPanel({
       )}
 
       {loading && (
-        <div className="flex items-center gap-2 text-xs text-ink-400 p-3">
-          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+        <div className="flex items-center gap-2 text-xs text-ink-400 p-3" role="status" aria-live="polite">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
           正在生成扩展方案...
         </div>
       )}
 
       {!loading && error && (
-        <div className="p-3 bg-red-400/5 border border-red-400/20 rounded text-[11px] text-red-300">
+        <div className="p-3 bg-red-400/5 border border-red-400/20 rounded text-[11px] text-red-300" role="alert">
           {error}
           <button
             onClick={() => selectedId && loadOptions(selectedId, true)}
@@ -139,7 +163,7 @@ export function ExpansionPanel({
       )}
 
       {!loading && !error && options.length > 0 && (
-        <div className="space-y-2">
+        <div className="space-y-2" role="status" aria-live="polite" aria-label="扩展方案列表">
           {options.map((opt, idx) => (
             <div key={idx} className="p-3 bg-ink-800/30 rounded-lg border border-ink-700/40">
               <div className="text-xs text-amber-300 font-medium mb-1 flex items-center gap-1">
@@ -153,12 +177,28 @@ export function ExpansionPanel({
                   <span>张力点：{opt.dramaticTension}</span>
                 </div>
               )}
+              {opt.chainImpacts && opt.chainImpacts.length > 0 && (
+                <div className="text-[10px] text-amber-300/90 mb-2 space-y-0.5">
+                  <div className="flex items-start gap-1">
+                    <GitBranch className="w-3 h-3 flex-shrink-0 mt-px" />
+                    <span className="font-medium">连锁影响：</span>
+                  </div>
+                  {opt.chainImpacts.map((impact, i) => (
+                    <div key={i} className="pl-4 border-l border-amber-500/20 ml-1">{impact}</div>
+                  ))}
+                  {opt.affectedChapterIds && opt.affectedChapterIds.length > 0 && (
+                    <div className="pl-4 ml-1 text-ink-400">
+                      采纳后将自动为后续章节追加铺垫提示
+                    </div>
+                  )}
+                </div>
+              )}
               <button
                 onClick={() => applyOption(opt)}
                 className="text-[10px] px-2 py-0.5 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/20 rounded flex items-center gap-1"
               >
                 <CheckCircle className="w-2.5 h-2.5" />
-                追加到摘要
+                {opt.affectedChapterIds && opt.affectedChapterIds.length > 0 ? '采纳并同步后续章节' : '追加到摘要'}
               </button>
             </div>
           ))}

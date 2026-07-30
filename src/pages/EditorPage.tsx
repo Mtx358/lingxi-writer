@@ -31,20 +31,19 @@ import { useAppHotkeys, type HotkeyHandler } from '@/hooks/useGlobalHotkeys';
 import { READING_SPEED_WPM } from '@/constants/config';
 import OutlinePanel from '@/components/editor/OutlinePanel';
 import TiptapEditor from '@/components/editor/TiptapEditor';
+import ErrorBoundary from '@/components/ErrorBoundary';
 import AIPanel from '@/components/editor/AIPanel';
 import CharactersPanel from '@/components/editor/CharactersPanel';
 import SettingsPanel from '@/components/editor/SettingsPanel';
 import ForeshadowPanel from '@/components/editor/ForeshadowPanel';
 import MaterialsPanel from '@/components/editor/MaterialsPanel';
-// 灵犀助手域面板：4 个模块仅在切到对应右侧 tab 时才渲染，与 OutlinePolishPanel 同样
+// 灵犀助手域面板：4 个模块仅在切到对应右侧 tab 时才渲染
 // 使用懒加载降低首屏代码体积
 const CoreSettingCardPanel = lazy(() => import('@/components/editor/CoreSettingCardPanel'));
 const BlueprintPanel = lazy(() => import('@/components/editor/BlueprintPanel'));
 const SubplotPanel = lazy(() => import('@/components/editor/SubplotPanel'));
 const UpdateSchedulePanel = lazy(() => import('@/components/editor/UpdateSchedulePanel'));
-// OutlinePolishPanel 含 8 个 tab、报告渲染、多个子组件，体积较大但仅在用户切到
-// 左侧"打磨"tab 才显示，懒加载可让首屏不拉取该部分代码
-const OutlinePolishPanel = lazy(() => import('@/components/editor/OutlinePolishPanel'));
+// 大纲打磨已独立为 /project/:projectId/polish 路由（PolishPage），编辑器内不再渲染
 // 以下 5 个均为条件渲染的抽屉/模态，用户不点开就永远不渲染，懒加载收益最大
 const VersionHistoryPanel = lazy(() => import('@/components/editor/VersionHistoryPanel'));
 const ConflictPanel = lazy(() => import('@/components/editor/ConflictPanel'));
@@ -107,7 +106,7 @@ export default function EditorPage() {
   const [showSearch, setShowSearch] = useState(false);
   const [showVersionPanel, setShowVersionPanel] = useState(false);
   const [showConflictPanel, setShowConflictPanel] = useState(false);
-  const [leftPanelTab, setLeftPanelTab] = useState<'outline' | 'polish'>('outline');
+  const [leftPanelTab, setLeftPanelTab] = useState<'outline'>('outline');
   const [showTour, setShowTour] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -374,6 +373,14 @@ export default function EditorPage() {
           </button>
           <button
             className="p-1.5 rounded-md text-ink-400 hover:text-ink-200 hover:bg-ink-800 transition-colors"
+            title="打磨工作台"
+            aria-label="打磨工作台"
+            onClick={() => navigate(`/project/${projectId}/polish`)}
+          >
+            <Wand2 className="w-4 h-4" aria-hidden="true" />
+          </button>
+          <button
+            className="p-1.5 rounded-md text-ink-400 hover:text-ink-200 hover:bg-ink-800 transition-colors"
             title="审稿中心"
             aria-label="审稿中心"
             onClick={() => navigate(`/project/${projectId}/review`)}
@@ -439,20 +446,6 @@ export default function EditorPage() {
               )}
             </button>
             <button
-              onClick={() => setLeftPanelTab('polish')}
-              className={`flex-1 py-2 flex items-center justify-center gap-1 transition-colors relative ${
-                leftPanelTab === 'polish'
-                  ? 'text-amber-400'
-                  : 'text-ink-500 hover:text-ink-300'
-              }`}
-            >
-              <Wand2 className="w-4 h-4" />
-              <span className="text-[10px]">打磨</span>
-              {leftPanelTab === 'polish' && (
-                <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-amber-400 rounded-full" />
-              )}
-            </button>
-            <button
               onClick={() => setLeftPanelCollapsed(true)}
               className="px-2 text-ink-500 hover:text-ink-300 hover:bg-ink-800 transition-colors"
               aria-label="折叠大纲面板"
@@ -461,12 +454,23 @@ export default function EditorPage() {
             </button>
           </div>
           <div className="flex-1 overflow-y-auto">
-            {leftPanelTab === 'outline' && <OutlinePanel />}
-            {leftPanelTab === 'polish' && (
-              <Suspense fallback={<ModalFallback />}>
-                <OutlinePolishPanel />
-              </Suspense>
-            )}
+            {/* 局部 ErrorBoundary：大纲树渲染异常时只降级左侧栏，
+                保留编辑器/右侧面板可用，避免整页降级丢失未保存内容 */}
+            <ErrorBoundary
+              resetKey={projectId ?? ''}
+              fallback={(error, reset) => (
+                <div className="flex flex-col items-center justify-center gap-2 p-4 text-center h-full">
+                  <AlertTriangle className="w-6 h-6 text-amber-400" />
+                  <div className="text-ink-400 text-xs">大纲面板加载异常</div>
+                  <div className="text-ink-600 text-[11px] max-w-xs">
+                    {import.meta.env.DEV ? error.message : '请尝试重试或重新加载'}
+                  </div>
+                  <button onClick={reset} className="btn btn-secondary text-xs">重试</button>
+                </div>
+              )}
+            >
+              <OutlinePanel />
+            </ErrorBoundary>
           </div>
         </aside>
 
@@ -482,8 +486,27 @@ export default function EditorPage() {
         )}
 
         {/* Center - Editor */}
+        {/* 局部 ErrorBoundary：编辑器内部抛错时只降级编辑器区域，
+            保留工具栏/章节列表可用，避免整页降级丢失未保存内容 */}
         <main data-tour="editor-area" className="flex-1 flex flex-col overflow-hidden relative">
-          <TiptapEditor />
+          <ErrorBoundary
+            resetKey={currentChapterId ?? ''}
+            fallback={(error, reset) => (
+              <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
+                <AlertTriangle className="w-8 h-8 text-amber-400" />
+                <div className="text-ink-300 text-sm">编辑器渲染异常</div>
+                <div className="text-ink-500 text-xs max-w-md">
+                  {import.meta.env.DEV ? error.message : '请尝试切换章节或重新加载'}
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={reset} className="btn btn-secondary text-xs">重试</button>
+                  <button onClick={() => window.location.reload()} className="btn btn-primary text-xs">重新加载</button>
+                </div>
+              </div>
+            )}
+          >
+            <TiptapEditor />
+          </ErrorBoundary>
         </main>
 
         {/* Right Panel */}
@@ -534,11 +557,27 @@ export default function EditorPage() {
 
           {/* Panel Content */}
           <div className="flex-1 overflow-y-auto">
-            {/* 4 个灵犀面板为 lazy 加载，需 Suspense 接管首次加载时的 fallback，
-                避免切到对应 tab 时 React 抛出 Suspense 异常无 handler 导致白屏 */}
-            <Suspense fallback={<ModalFallback />}>
-              {rightPanelContent}
-            </Suspense>
+            {/* 局部 ErrorBoundary 在外、Suspense 在内：
+                - Suspense 仅接管 lazy chunk 首次加载的挂起，不捕获渲染异常
+                - ErrorBoundary 捕获 lazy 加载完成后渲染期抛错，避免单 tab 崩溃带垮整页
+                - resetKey 绑定 rightPanelTab：切换 tab 自动重置 boundary，无需手动重试 */}
+            <ErrorBoundary
+              resetKey={rightPanelTab}
+              fallback={(error, reset) => (
+                <div className="flex flex-col items-center justify-center gap-2 p-4 text-center h-full">
+                  <AlertTriangle className="w-6 h-6 text-amber-400" />
+                  <div className="text-ink-400 text-xs">面板加载异常</div>
+                  <div className="text-ink-600 text-[11px] max-w-xs">
+                    {import.meta.env.DEV ? error.message : '请尝试切换 tab 或重新加载'}
+                  </div>
+                  <button onClick={reset} className="btn btn-secondary text-xs">重试</button>
+                </div>
+              )}
+            >
+              <Suspense fallback={<ModalFallback />}>
+                {rightPanelContent}
+              </Suspense>
+            </ErrorBoundary>
           </div>
         </aside>
 

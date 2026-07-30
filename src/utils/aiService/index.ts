@@ -16,6 +16,7 @@
  *   - materials.ts  素材卡片提问 / 因果影响
  *   - blueprint.ts  设定卡 / 蓝图
  *   - writing.ts    指令写作 / 多版本 / 全书通读 / 简介 / 标签 / 敏感词
+ *   - health.ts     项目健康度诊断 / 智能引导 / 打磨摘要
  */
 
 // ==================== 命名导出 re-export ====================
@@ -43,6 +44,8 @@ export * from './outline';
 export * from './materials';
 export * from './blueprint';
 export * from './writing';
+export * from './health';
+export * from './polishTools';
 
 // ==================== 兼容旧调用的单例 facade ====================
 //
@@ -76,6 +79,8 @@ import {
   generateChapterBeats,
   generateStructureVariants,
   generateConflictCompass,
+  deepAskInspirationCard,
+  generateStoryLink,
 } from './outline';
 import { askMaterialQuestion, previewCausalImpact } from './materials';
 import {
@@ -120,6 +125,8 @@ export const aiService = {
   generateConflictCompass,
   askMaterialQuestion,
   previewCausalImpact,
+  deepAskInspirationCard,
+  generateStoryLink,
   // 灵犀助手域：设定卡 / 蓝图 / 指令写作 / 多版本 / 全书润色 / 简介 / 标签 / 敏感词 / 章节分析
   generateCoreSettingCardQuestions,
   checkSettingCardContradictions,

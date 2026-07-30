@@ -27,6 +27,11 @@ const { memoryStore, mockStorage } = vi.hoisted(() => {
     set: vi.fn(async (key: string, value: unknown): Promise<void> => {
       memoryStore.set(key, value);
     }),
+    setMany: vi.fn(async (entries: Record<string, unknown>): Promise<void> => {
+      for (const [key, value] of Object.entries(entries)) {
+        memoryStore.set(key, value);
+      }
+    }),
     remove: vi.fn(async (key: string): Promise<void> => {
       memoryStore.delete(key);
     }),
@@ -103,6 +108,7 @@ beforeEach(() => {
   // 清除 mock 调用记录，保留实现
   mockStorage.get.mockClear();
   mockStorage.set.mockClear();
+  mockStorage.setMany.mockClear();
   mockStorage.remove.mockClear();
   mockStorage.patchProjects.mockClear();
   // 清除 toast mock 调用记录
@@ -500,8 +506,8 @@ describe('projectSlice', () => {
       const ok = await useAppStore.getState().saveProject();
       expect(ok).toBe(true);
       expect(useAppStore.getState().lastSavedAt).not.toBeNull();
-      // 验证 storage.set 被调用（chapters/characters 等多键）
-      expect(mockStorage.set).toHaveBeenCalled();
+      // 验证 storage.setMany 被调用（chapters/characters 等多键合并为一次批量写入）
+      expect(mockStorage.setMany).toHaveBeenCalled();
       // 验证 patchProjects 被调用（update 操作，更新 totalWords/updatedAt）
       const updateCall = mockStorage.patchProjects.mock.calls.find(
         c => (c[0] as { type: string; project?: { id: string } }).type === 'update'

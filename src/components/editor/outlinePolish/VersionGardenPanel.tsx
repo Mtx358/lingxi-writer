@@ -48,6 +48,7 @@ export function VersionGardenPanel({
         </p>
         <div className="flex gap-1">
           <input
+            aria-label="快照标签"
             value={label}
             onChange={e => setLabel(e.target.value)}
             placeholder="快照标签，如：第一轮打磨后"
@@ -119,9 +120,12 @@ function SnapshotItem({
       <div className="flex items-center gap-1.5">
         <button
           onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
+          aria-controls={`snapshot-detail-${snapshot.id}`}
+          aria-label={`${expanded ? '折叠' : '展开'}快照「${snapshot.label}」详情`}
           className="flex items-center gap-1 flex-1 min-w-0 text-left"
         >
-          {expanded ? <ChevronDown className="w-3 h-3 text-ink-500 flex-shrink-0" /> : <ChevronRight className="w-3 h-3 text-ink-500 flex-shrink-0" />}
+          {expanded ? <ChevronDown className="w-3 h-3 text-ink-500 flex-shrink-0" aria-hidden="true" /> : <ChevronRight className="w-3 h-3 text-ink-500 flex-shrink-0" aria-hidden="true" />}
           <span className="text-xs text-ink-200 truncate flex-1">{snapshot.label}</span>
         </button>
         <span className="text-[9px] text-ink-500 flex-shrink-0">{time}</span>
@@ -144,7 +148,7 @@ function SnapshotItem({
       </div>
       <div className="text-[9px] text-ink-500 mt-0.5 ml-4">{snapshot.chapters.length} 个节点</div>
       {expanded && (
-        <div className="mt-2 pt-2 border-t border-ink-700/50 space-y-0.5 max-h-40 overflow-y-auto">
+        <div id={`snapshot-detail-${snapshot.id}`} className="mt-2 pt-2 border-t border-ink-700/50 space-y-0.5 max-h-40 overflow-y-auto">
           {snapshot.chapters.slice(0, 30).map(c => (
             <div key={c.id} className="text-[10px] text-ink-400 truncate">
               <span className="text-ink-500">[{c.levelType}]</span> {c.title}

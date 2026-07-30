@@ -101,11 +101,6 @@ vi.mock('@/components/editor/UpdateSchedulePanel', () => ({
     return <div data-testid="mock-updateschedule-panel">UpdateSchedulePanel</div>;
   },
 }));
-vi.mock('@/components/editor/OutlinePolishPanel', () => ({
-  default: function MockOutlinePolishPanel() {
-    return <div data-testid="mock-outline-polish-panel">OutlinePolishPanel</div>;
-  },
-}));
 vi.mock('@/components/editor/VersionHistoryPanel', () => ({
   default: function MockVersionHistoryPanel({ onClose }: { onClose: () => void }) {
     return (
@@ -536,14 +531,6 @@ describe('EditorPage', () => {
     mockStore();
     render(<EditorPage />);
     await waitFor(() => expect(screen.getByTestId('mock-outline-panel')).toBeInTheDocument());
-  });
-
-  it('切换到打磨 tab 渲染 OutlinePolishPanel', async () => {
-    mockStore();
-    render(<EditorPage />);
-    await waitFor(() => expect(screen.getByTestId('mock-outline-panel')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('打磨'));
-    await waitFor(() => expect(screen.getByTestId('mock-outline-polish-panel')).toBeInTheDocument());
   });
 
   it('点击折叠按钮调用 setLeftPanelCollapsed(true)', async () => {

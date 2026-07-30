@@ -23,6 +23,8 @@ import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import path from 'node:path';
 
 const hoisted = vi.hoisted(() => {
+  const _path = require('node:path');
+  const _os = require('node:os');
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const fsMock = {
     readFile: vi.fn(),
@@ -55,8 +57,9 @@ const hoisted = vi.hoisted(() => {
     openExternal: vi.fn(),
   };
   return {
-    TEST_USERDATA: '/tmp/lingxi-test-userdata-storage-handler',
-    TEST_HOME: '/tmp/lingxi-test-home-storage-handler',
+    TEST_USERDATA: _path.join(_os.tmpdir(), 'lingxi-test-userdata-storage-handler'),
+    TEST_HOME: _path.join(_os.tmpdir(), 'lingxi-test-home-storage-handler'),
+    tmpdir: _os.tmpdir(),
     handlers,
     fsMock,
     loggerMock,
@@ -73,7 +76,7 @@ vi.mock('electron', () => ({
       if (name === 'documents') return path.join(hoisted.TEST_HOME, 'Documents');
       if (name === 'desktop') return path.join(hoisted.TEST_HOME, 'Desktop');
       if (name === 'downloads') return path.join(hoisted.TEST_HOME, 'Downloads');
-      return '/tmp';
+      return hoisted.tmpdir;
     }),
   },
   ipcMain: {
@@ -683,12 +686,13 @@ describe('material:deleteAttachment handler 注册层', () => {
 
 describe('file:readDataURL handler 注册层', () => {
   it('filePath 非字符串时 reject', async () => {
-    await expect(callHandler('file:readDataURL', null)).rejects.toThrow('invalid filePath');
-    await expect(callHandler('file:readDataURL', 123)).rejects.toThrow('invalid filePath');
+    // safeIpcHandle 包装层将原始错误统一替换为通用文案，防止主进程路径/堆栈泄漏到渲染层
+    await expect(callHandler('file:readDataURL', null)).rejects.toThrow(/操作失败，请重试/);
+    await expect(callHandler('file:readDataURL', 123)).rejects.toThrow(/操作失败，请重试/);
   });
 
   it('路径在 data dir 外时 reject', async () => {
-    await expect(callHandler('file:readDataURL', '/etc/passwd')).rejects.toThrow('path outside data dir');
+    await expect(callHandler('file:readDataURL', '/etc/passwd')).rejects.toThrow(/操作失败，请重试/);
     expect(hoisted.loggerMock.audit).toHaveBeenCalledWith(
       'security.path', 'readDataURL rejected: path outside data dir',
       expect.objectContaining({ filePath: '/etc/passwd' }),
@@ -712,7 +716,7 @@ describe('file:readDataURL handler 注册层', () => {
       if (p === filePath) return '/etc/secret.png';
       return p;
     });
-    await expect(callHandler('file:readDataURL', filePath)).rejects.toThrow('realpath outside data dir');
+    await expect(callHandler('file:readDataURL', filePath)).rejects.toThrow(/操作失败，请重试/);
     expect(hoisted.loggerMock.audit).toHaveBeenCalledWith(
       'security.path', 'readDataURL rejected: realpath outside data dir (symlink?)',
       expect.objectContaining({ filePath }),

@@ -31,6 +31,7 @@ const { storageMock, decodeMock } = vi.hoisted(() => ({
   storageMock: {
     get: vi.fn(),
     set: vi.fn().mockResolvedValue(undefined),
+    setMany: vi.fn().mockResolvedValue(undefined),
     saveFileDialog: vi.fn(),
     writeProjectFile: vi.fn(),
     remove: vi.fn().mockResolvedValue(undefined),

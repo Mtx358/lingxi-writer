@@ -99,6 +99,10 @@ export interface Chapter {
   beats?: ChapterBeat[];
   /** 场景定位仪四要素（场景级节点使用） */
   sceneLocator?: SceneLocator;
+  /** 目标张力（0-100）：创作者在曲线拖拽面板里设计的期望张力，与诊断实际值对照 */
+  targetTension?: number;
+  /** 目标情感强度（0-100）：创作者设计的期望情感强度 */
+  targetEmotion?: number;
 }
 
 export interface ChapterVersion {
@@ -343,6 +347,10 @@ export interface OutlineExpansionOption {
   content: string;
   /** 该方案引入的冲突/张力点 */
   dramaticTension: string;
+  /** 连锁影响：本方案会对后续章节/人物/伏笔产生的连锁反应（文档：明确标注连锁影响） */
+  chainImpacts?: string[];
+  /** 需同步更新的后续关联章节 ID 列表（采纳方案时自动追加铺垫提示到这些章节的 notes） */
+  affectedChapterIds?: string[];
 }
 
 /** 大纲打磨完整报告 */
@@ -415,6 +423,47 @@ export interface SceneLocator {
   infoRelease?: 'reader-more' | 'reader-same' | 'reader-less';
   /** 关联伏笔 ID 列表（埋设/回收双向） */
   foreshadowLinks?: string[];
+  /** 自动评分（0-100，规格书阶段3-4：填完自动生成本章评分） */
+  score?: number;
+  /** 评分维度细分（供 UI 展示评分依据） */
+  scoreBreakdown?: SceneLocatorScoreBreakdown;
+}
+
+/** 场景定位仪评分维度细分 */
+export interface SceneLocatorScoreBreakdown {
+  /** 视点清晰度（0-25）：是否指定了视点人物 */
+  povClarity: number;
+  /** 情绪弧度（0-25）：起止情绪是否不同且有变化 */
+  emotionArc: number;
+  /** 信息节奏（0-25）：信息释放量是否合理（reader-more/same/less） */
+  infoRhythm: number;
+  /** 伏笔密度（0-25）：是否关联了伏笔 */
+  foreshadowDensity: number;
+}
+
+/**
+ * 章节批注：打磨时对某一章节/段落的评论与待办。
+ * 按章节维度组织（Record<chapterId, ChapterComment[]>），与正文版本解耦。
+ */
+export interface ChapterComment {
+  /** 批注 ID */
+  id: string;
+  /** 所属章节 ID */
+  chapterId: string;
+  /** 项目 ID */
+  projectId: string;
+  /** 批注内容 */
+  content: string;
+  /** 类型：问题/建议/灵感/待办 */
+  type: 'issue' | 'suggestion' | 'inspiration' | 'todo';
+  /** 是否已解决 */
+  resolved: boolean;
+  /** 可选锚点文本（批注指向的正文片段） */
+  anchorText?: string;
+  /** 创建时间（ISO 字符串） */
+  createdAt: string;
+  /** 更新时间（ISO 字符串） */
+  updatedAt: string;
 }
 
 /** 核心驱动锁定：作品主线基准线 */
@@ -440,6 +489,8 @@ export interface ConflictLayer {
   description: string;
   /** 情节种子：3 个候选情节方向 */
   seeds: string[];
+  /** 冲突权重（0-100）：创作者拖拽调整，决定该层冲突在故事中的分量。加重时自动生成对应情节种子 */
+  weight?: number;
 }
 
 /** 结构变体（骨架生成阶段预览 3 种叙事结构） */
@@ -457,6 +508,11 @@ export interface StructureVariant {
   fitScenarios: string;
   /** 推荐的根层级结构（如：卷-章 / 幕-场-节） */
   suggestedHierarchy: string[];
+  /** 节奏张力曲线（0-100，按章节进度采样，用于三套变体并排预览节奏差异）
+   *  规格书阶段2-1：「三套结构变体并排预览，在时间轴上对比节奏差异」。
+   *  线性结构通常单调上升；双线结构有中点高峰；罗生门结构呈阶梯式攀升。
+   */
+  tensionCurve?: number[];
 }
 
 /** 卡片促活：AI 对素材卡片的深度提问 */
@@ -469,9 +525,23 @@ export interface MaterialQuestion {
 
 /** 因果推演变动报告项 */
 export interface CausalImpactItem {
-  /** 受影响类型 */
+  /** 受影响类型
+   *  规格书阶段5-2：影响树树枝按影响程度标色
+   *    - broken   🔴 严重断裂
+   *    - weakened 🟡 部分影响
+   *    - missing  🟢 轻微波动（原"缺失"，按标尺改为绿色"轻微波动"语义）
+   */
   type: 'broken' | 'weakened' | 'missing';
-  /** 受影响的章节 ID（若有） */
+  /** 受影响的实体类型
+   *  规格书阶段5-2：「树枝是受影响的章节/人物/伏笔/设定」
+   *  影响树按实体类型二级分组，让创作者一眼看清改动会波及哪些维度。
+   */
+  entityType?: 'chapter' | 'character' | 'foreshadow' | 'setting';
+  /** 受影响的实体 ID（章节 ID / 角色 ID / 伏笔 ID / 设定项 ID） */
+  entityId?: string;
+  /** 受影响的实体名称（章节标题 / 角色名 / 伏笔标题 / 设定项名） */
+  entityName?: string;
+  /** 受影响的章节 ID（若有，向后兼容旧字段） */
   chapterId?: string;
   /** 章节标题 */
   chapterTitle?: string;
@@ -493,6 +563,576 @@ export interface CausalImpactReport {
   overallRisk: 'high' | 'medium' | 'low';
   /** 生成时间 */
   generatedAt: string;
+}
+
+// ============================================================================
+// 灵感打磨域（规格书第一阶段：碎片捕获 / 卡片促活 / 智能连线）
+// ============================================================================
+
+/** 灵感卡类型 */
+export type InspirationCardType =
+  | 'character'    // 人物种子
+  | 'concept'      // 高概念
+  | 'scene'        // 场景片段
+  | 'dialogue'     // 对话金句
+  | 'setting'      // 设定疑问
+  | 'plot';        // 情节脑洞
+
+/**
+ * 灵感卡生命周期状态（规格书阶段1：全链路转化率追踪）
+ * - pending:  刚捕获，尚未接入任何结构
+ * - outlined: 已接入大纲（关联到章节/节拍）
+ * - written:  已写入正文（创作中实际用到）
+ * - archived: 暂弃（暂时搁置，不参与转化率分母）
+ */
+export type InspirationCardStatus = 'pending' | 'outlined' | 'written' | 'archived';
+
+/** 灵感卡：碎片捕获面板的存储单元 */
+export interface InspirationCard {
+  id: string;
+  projectId: string;
+  /** 卡片类型 */
+  type: InspirationCardType;
+  /** 主标题/原始输入（保留用户语气，不自动润色） */
+  title: string;
+  /** 详细内容（语音输入/短句打字/粘贴均存于此） */
+  content: string;
+  /** 创建时间 */
+  createdAt: string;
+  /** 关联的章节 ID（打磨到对应章节时自动提醒） */
+  relatedChapterId?: string;
+  /** 父卡片 ID（深度提问生成的子卡片挂到主卡下方） */
+  parentId?: string;
+  /** 子卡片数量（仅主卡维护，便于 UI 折叠展示） */
+  childCount?: number;
+  /** AI 深度提问维度（如：秘密/创伤/伪装/动机，仅子卡片有） */
+  dimension?: string;
+  /** 生命周期状态（默认 pending，转化率追踪用） */
+  status?: InspirationCardStatus;
+}
+
+/** 连线沙盘：两张卡片之间建立的叙事脉络 */
+export interface StoryLink {
+  id: string;
+  projectId: string;
+  /** 起点/终点卡片 ID */
+  sourceCardId: string;
+  targetCardId: string;
+  /** AI 生成的叙事脉络（如：六代人传承的"说服"技艺…） */
+  narrative: string;
+  /** 用户备注 */
+  note?: string;
+  createdAt: string;
+}
+
+// ============================================================================
+// 多线作战指挥台（规格书第三阶段）
+// ============================================================================
+
+/** 多线时间轴的线索类型 */
+export type StorylineType = 'protagonist' | 'antagonist' | 'subplot';
+
+/** 多线时间轴上的一个节点（章节级锚点） */
+export interface TimelineNode {
+  /** 节点 ID */
+  id: string;
+  /** 所属线索 ID */
+  storylineId: string;
+  /** 关联章节 ID */
+  chapterId: string;
+  /** 节点标题（通常取章节标题） */
+  title: string;
+  /** 时间轴上的顺序位置（与章节 order 对齐） */
+  order: number;
+  /** 节点摘要 */
+  summary?: string;
+}
+
+/** 一条故事线 */
+export interface Storyline {
+  id: string;
+  projectId: string;
+  type: StorylineType;
+  name: string;
+  color: string;
+  /** 时间轴节点 */
+  nodes: TimelineNode[];
+}
+
+/** 交集点预警目标 */
+export interface IntersectionTarget {
+  id: string;
+  projectId: string;
+  /** 交集章节 ID（如：第10章主角与反派第一次正面交锋） */
+  chapterId: string;
+  /** 交集描述 */
+  description: string;
+  /** 参与线索 ID 列表 */
+  storylineIds: string[];
+  /** 预警结果：null=未推演，'ok'=按时汇合，'warning'=需提前铺垫，'danger'=无法汇合 */
+  status: 'ok' | 'warning' | 'danger' | null;
+  /** 预警说明 */
+  message?: string;
+}
+
+/** 多线错位冲突类型：时间矛盾 / 行程冲突 / 节点真空 / 顺序倒置 */
+export type MultiLineConflictType = 'time-paradox' | 'travel-conflict' | 'node-gap' | 'order-inversion';
+
+/** 多线错位自动巡检结果（文档：智能错位检测自动检测时间矛盾和行程冲突） */
+export interface MultiLineConflict {
+  id: string;
+  /** 冲突类型 */
+  type: MultiLineConflictType;
+  /** 涉及线索 ID */
+  storylineId: string;
+  /** 涉及线索名称 */
+  storylineName: string;
+  /** 关联章节 ID */
+  chapterId?: string;
+  /** 冲突描述 */
+  description: string;
+  /** 修复建议 */
+  suggestion: string;
+  /** 严重等级 */
+  severity: 'error' | 'warning';
+}
+
+// ============================================================================
+// 节奏压力测试（规格书第四阶段）
+// ============================================================================
+
+/** 节奏能量类型 */
+export type PacingEnergyType = 'external' | 'emotional' | 'buffer';
+
+/** 单章节奏压力数据 */
+export interface PacingPressurePoint {
+  chapterId: string;
+  chapterTitle: string;
+  /** 外部能量（动作戏/冲突爆发/反转）0-100 */
+  external: number;
+  /** 情感能量（内心抉择/关系转折/情绪爆发）0-100 */
+  emotional: number;
+  /** 是否低谷缓冲段（日常过渡/信息铺垫/文戏） */
+  isBuffer: boolean;
+  /** 综合强度 */
+  total: number;
+}
+
+/** 节奏压力测试报告 */
+export interface PacingPressureReport {
+  /** 生成时间 */
+  generatedAt: string;
+  /** 范围：'all' 或章节/卷 ID */
+  scope: string;
+  /** 每章节奏数据 */
+  points: PacingPressurePoint[];
+  /** 检测到的节奏问题（连续低能量 / 连续高能量） */
+  issues: PacingIssue[];
+}
+
+/** 节奏问题（带具体建议） */
+export interface PacingIssue {
+  id: string;
+  /** 问题类型 */
+  type: 'low-streak' | 'high-streak' | 'flat' | 'spike';
+  /** 受影响章节 ID 范围 */
+  chapterIds: string[];
+  /** 问题描述 */
+  description: string;
+  /** 具体建议（不是空喊"节奏不对"，而是落地情节方向） */
+  suggestion: string;
+  severity: 'warning' | 'info';
+}
+
+/**
+ * 节奏调校 AI 建议（规格书阶段4-2：拖高曲线后 AI 自动给出具体操作建议）。
+ * 创作者在节奏曲线上拖拽调整某章能量值后，AI 基于调整方向（拉高/压低）与章节上下文，
+ * 产出落地操作建议，满意后一键应用到章节节拍/摘要。
+ */
+export interface PacingAdjustmentAdvice {
+  /** 关联章节 ID */
+  chapterId: string;
+  /** 调整维度 */
+  dimension: 'external' | 'emotional';
+  /** 调整方向 */
+  direction: 'raise' | 'lower';
+  /** 调整幅度（前后差值绝对值） */
+  delta: number;
+  /** AI 给出的具体操作建议（落地情节方向） */
+  advice: string;
+  /** 备选方案（2-3 个变体） */
+  variants: string[];
+  /** 生成时间 */
+  generatedAt: string;
+}
+
+// ============================================================================
+// 草蛇灰线看板（规格书第四阶段）
+// ============================================================================
+
+/** 伏笔看板分组 */
+export type ForeshadowBoardGroup = 'pending' | 'progressing' | 'paidoff' | 'overdue';
+
+/** 伏笔看板项（扩展 Foreshadow，加入看板字段） */
+export interface ForeshadowBoardItem {
+  foreshadowId: string;
+  title: string;
+  /** 当前分组 */
+  group: ForeshadowBoardGroup;
+  /** 埋设章节标题 */
+  plantedChapterTitle?: string;
+  /** 预设回收章节标题 */
+  payoffChapterTitle?: string;
+  /** 逾期天数（group=overdue 时 >0） */
+  overdueChapters: number;
+  /** 重要等级 */
+  priority: Foreshadow['priority'];
+  /** 关联角色 */
+  relatedCharacters: string[];
+}
+
+/** 伏笔回收合理性检测结果（规格书阶段4-4：回收合理性自动检测） */
+export interface ForeshadowPayoffCheck {
+  /** 伏笔 ID */
+  foreshadowId: string;
+  /** 是否合理：回收章节正文确有呼应埋设内容 */
+  reasonable: boolean;
+  /** 合理性等级 */
+  level: 'good' | 'weak' | 'missing';
+  /** 检测说明 */
+  reason: string;
+  /** 改进建议 */
+  suggestion: string;
+}
+
+/** 逾期伏笔应急回收方案（规格书阶段4-4：逾期伏笔自动附「应急回收方案」） */
+export interface EmergencyRecoveryPlan {
+  /** 伏笔 ID */
+  foreshadowId: string;
+  /** 推荐回收章节 ID（就近选择当前最新章节或其附近章节） */
+  recommendedChapterId?: string;
+  /** 推荐回收章节标题 */
+  recommendedChapterTitle?: string;
+  /** 回收方式：3 个变体方向 */
+  variants: EmergencyRecoveryVariant[];
+  /** 综合提示 */
+  summary: string;
+}
+
+/** 应急回收方案的单个变体 */
+export interface EmergencyRecoveryVariant {
+  /** 变体标题 */
+  title: string;
+  /** 变体内容描述 */
+  content: string;
+  /** 代价/影响标注 */
+  cost: 'low' | 'medium' | 'high';
+}
+
+// ============================================================================
+// 修改版本留痕（规格书第五阶段）
+// ============================================================================
+
+/** 版本对比差异项 */
+export interface VersionDiffEntry {
+  /** 章节标题/字段名 */
+  field: string;
+  /** 旧值 */
+  oldValue: string;
+  /** 新值 */
+  newValue: string;
+  /** 变更类型 */
+  changeType: 'added' | 'removed' | 'modified';
+}
+
+/** 两个快照的对比报告 */
+export interface VersionDiffReport {
+  /** 旧快照 ID */
+  oldSnapshotId: string;
+  /** 新快照 ID */
+  newSnapshotId: string;
+  /** 差异项列表 */
+  diffs: VersionDiffEntry[];
+  /** 生成时间 */
+  generatedAt: string;
+}
+
+// ============================================================================
+// 版本花园：多分支并行试错（规格书第五阶段-4）
+// ============================================================================
+
+/** 分支状态：active 可继续编辑 / merged 已合并回主干 / archived 归档停用 */
+export type BranchStatus = 'active' | 'merged' | 'archived';
+
+/**
+ * 创作分支：从某个快照分叉出的独立大纲线，可独立发展、与主干对比、合并回主干。
+ * 每条分支持有自己的一份章节结构快照（与 OutlineSnapshot.chapters 同构），
+ * 在分支内编辑只影响 branch.chapters，不污染主干 chapters。
+ */
+export interface OutlineBranch {
+  id: string;
+  projectId: string;
+  /** 分支名（用户可读） */
+  name: string;
+  /** 分叉来源快照 ID（主干某次 saveOutlineSnapshot 的结果） */
+  sourceSnapshotId: string;
+  /** 分叉时间 */
+  createdAt: string;
+  /** 最近一次在分支内编辑的时间 */
+  updatedAt: string;
+  /** 分支自己的章节结构快照（独立于主干 chapters） */
+  chapters: OutlineSnapshot['chapters'];
+  /** 分支备注 */
+  notes?: string;
+  status: BranchStatus;
+}
+
+/** 分支与主干（或另一分支）的差异指标项 */
+export interface BranchMetricDelta {
+  label: string;
+  /** 主干值 */
+  baseValue: number | string;
+  /** 分支值 */
+  branchValue: number | string;
+  /** 变化方向 */
+  direction: 'up' | 'down' | 'same';
+  /** 是否正向（绿色） */
+  positive: boolean;
+}
+
+/** 分支对比报告：章节差异 + 关键指标变化 */
+export interface BranchDiffReport {
+  branchId: string;
+  baseLabel: string;
+  branchLabel: string;
+  generatedAt: string;
+  diffs: VersionDiffEntry[];
+  metrics: BranchMetricDelta[];
+}
+
+// ============================================================================
+// 人物弧光校验扩展（规格书第四阶段）
+// ============================================================================
+
+/** 人物弧光校验问题类型 */
+export type CharacterArcIssueType =
+  | 'personality-break'    // 性格一致性警报
+  | 'ability-exceed'       // 能力边界警报
+  | 'relationship-jump'    // 关系温度计跳转
+  | 'emotion-jump';        // 相邻章节情绪跳转突兀（规格书阶段4-5 角色维度）
+
+/** 人物弧光校验问题 */
+export interface CharacterArcIssue {
+  id: string;
+  characterId: string;
+  characterName: string;
+  type: CharacterArcIssueType;
+  /** 触发章节 ID */
+  chapterId?: string;
+  chapterTitle?: string;
+  description: string;
+  suggestion: string;
+  severity: 'error' | 'warning';
+}
+
+/** 两人关系温度点 */
+export interface RelationshipTemperaturePoint {
+  chapterId: string;
+  chapterTitle: string;
+  /** 温度值 0-100（0=敌对，50=中立，100=亲密） */
+  temperature: number;
+  /** 简要说明 */
+  note?: string;
+}
+
+/** 两人关系温度曲线 */
+export interface RelationshipTemperatureCurve {
+  characterAId: string;
+  characterBId: string;
+  points: RelationshipTemperaturePoint[];
+  /** 检测到的跳转问题 */
+  jumps: Array<{
+    chapterId: string;
+    chapterTitle: string;
+    fromTemp: number;
+    toTemp: number;
+    description: string;
+  }>;
+}
+
+// ============================================================================
+// 人物弧光三维追踪（规格书阶段4-3：情绪/能力/认知三条演进曲线）
+// ============================================================================
+
+/** 单角色单章的三维弧光数值点 */
+export interface CharacterArcCurvePoint {
+  chapterId: string;
+  chapterTitle: string;
+  /** 情绪强度 0-100（该角色在本章的情绪起伏幅度） */
+  emotion: number;
+  /** 能力表现 0-100（该角色在本章展现的能力水平） */
+  ability: number;
+  /** 认知转变 0-100（该角色在本章的认知/领悟程度） */
+  cognition: number;
+  /** 本章异常点（某维度突变），点击可查看详情 */
+  anomalies: Array<{
+    dimension: 'emotion' | 'ability' | 'cognition';
+    /** 异常原因说明 */
+    reason: string;
+    /** 补救方案 */
+    remedy: string;
+  }>;
+}
+
+/** 单个角色的三维弧光曲线 */
+export interface CharacterArcCurve {
+  characterId: string;
+  characterName: string;
+  points: CharacterArcCurvePoint[];
+}
+
+/** 弧光异常点的结构化补救方案（规格书阶段4-3：附带补救方案） */
+export interface CharacterArcRemedyPlan {
+  /** 关联的角色 ID + 章节 ID + 维度 */
+  characterId: string;
+  chapterId: string;
+  dimension: 'emotion' | 'ability' | 'cognition';
+  /** 3 个变体方向 */
+  variants: Array<{
+    title: string;
+    content: string;
+    cost: 'low' | 'medium' | 'high';
+  }>;
+  summary: string;
+}
+
+/** 角色维度情感一致性报告（规格书阶段4-5：按角色检测相邻章节情绪跳转） */
+export interface CharacterEmotionConsistencyReport {
+  generatedAt: string;
+  /** 按角色分组的情感跳转问题 */
+  issues: CharacterArcIssue[];
+  /** 每个角色的逐章情感强度（供曲线渲染） */
+  curves: Array<{
+    characterId: string;
+    characterName: string;
+    points: Array<{ chapterId: string; chapterTitle: string; emotion: number }>;
+  }>;
+}
+
+/** 读者共情问题类型 */
+export type ReaderEmpathyIssueType =
+  | 'motivation-gap'      // 动机断层：主角行为缺乏读者可理解的动机
+  | 'emotion-flat'        // 情感扁平：关键场景情感冲击不足，读者无代入
+  | 'stakes-unclear'      // 利益模糊：读者不清楚主角失败的代价
+  | 'perspective-drift'   // 视角漂移：叙事视角跳跃使读者出戏
+  // 规格书阶段4-6 读者共情校验四项（读者留存视角）
+  | 'suspense-forget'     // 悬念遗忘检测：某悬念埋设后太久未推进/回收，读者已遗忘或等得不耐烦
+  | 'emotion-fatigue'     // 情感疲劳检测：连续高压冲突，读者需要情感喘息口
+  | 'favorability-low'    // 角色好感度预估：读者对该角色好感走低
+  | 'drop-risk';          // 弃书风险点标记：节奏拖沓/冲突乏力的高危弃书节点
+
+/** 读者共情校验问题 */
+export interface ReaderEmpathyIssue {
+  id: string;
+  type: ReaderEmpathyIssueType;
+  /** 触发章节 ID */
+  chapterId?: string;
+  chapterTitle?: string;
+  description: string;
+  suggestion: string;
+  severity: 'error' | 'warning';
+}
+
+/** 单章共情强度点：动机 / 情感 / 利益三维 */
+export interface ReaderEmpathyPoint {
+  chapterId: string;
+  chapterTitle: string;
+  /** 动机清晰度 0-100（读者能否理解主角为何这么做） */
+  motivation: number;
+  /** 情感冲击力 0-100（场景是否唤起读者情绪） */
+  emotion: number;
+  /** 利益清晰度 0-100（读者是否清楚主角失败的代价） */
+  stakes: number;
+  /** 综合 0-100 */
+  total: number;
+}
+
+/** 读者共情校验报告 */
+export interface ReaderEmpathyReport {
+  generatedAt: string;
+  scope: 'all' | string;
+  /** 各章节共情强度 */
+  points: ReaderEmpathyPoint[];
+  issues: ReaderEmpathyIssue[];
+  /** 整体共情评分 0-100 */
+  overallScore: number;
+}
+
+/** 沙盒试运行问题摘要（用于前后对比对齐） */
+export interface SandboxTrialIssueDigest {
+  id: string;
+  dimension: OutlinePolishDimension;
+  severity: OutlineIssueSeverity;
+  description: string;
+  chapterId?: string;
+  chapterTitle?: string;
+}
+
+/** 沙盒试运行诊断快照（轻量，仅抓问题摘要 + 关键指标） */
+export interface SandboxTrialSnapshot {
+  capturedAt: string;
+  totalIssues: number;
+  errorCount: number;
+  warningCount: number;
+  threeActRatio: [number, number, number];
+  totalChapters: number;
+  totalWords: number;
+  /** 问题摘要列表 */
+  issueDigests: SandboxTrialIssueDigest[];
+  /** 节奏曲线摘要：每章 tension 均值与方差（用于前后对比节奏均匀度） */
+  pacingMean: number;
+  /** 节奏均方差（越低越均匀） */
+  pacingVariance: number;
+  /** 人物弧光风险统计：高风险角色数 */
+  characterArcRiskCount: number;
+  /** 伏笔状态统计：[待回收, 推进中, 已回收, 逾期] */
+  foreshadowStats: [number, number, number, number];
+  /** 伏笔回收率（百分比） */
+  foreshadowRecoveryRate: number;
+  /** 逻辑维度问题数（logic dimension 的 active issue 数） */
+  logicIssueCount: number;
+  /** 章末钩子强度均值（0-5，取自 readerEmpathy 或诊断报告） */
+  avgHookStrength: number;
+}
+
+/** 沙盒试运行单项指标变化 */
+export interface SandboxTrialMetricDelta {
+  label: string;
+  before: string | number;
+  after: string | number;
+  /** 变化方向 */
+  direction: 'up' | 'down' | 'same';
+  /** 是否为正向变化（问题减少/字数增加等视为正向） */
+  positive: boolean;
+}
+
+/** 沙盒试运行前后对比报告 */
+export interface SandboxTrialReport {
+  generatedAt: string;
+  /** 试运行前诊断快照 */
+  before: SandboxTrialSnapshot;
+  /** 试运行后诊断快照 */
+  after: SandboxTrialSnapshot;
+  /** 已解决的问题（before 有 after 无，按描述对齐） */
+  resolvedIssues: SandboxTrialIssueDigest[];
+  /** 新增的问题（after 有 before 无） */
+  newIssues: SandboxTrialIssueDigest[];
+  /** 仍存在的问题（before 和 after 都有） */
+  remainingIssues: SandboxTrialIssueDigest[];
+  /** 关键指标变化 */
+  metricDeltas: SandboxTrialMetricDelta[];
+  /** 验证结论 */
+  verdict: 'improved' | 'neutral' | 'regressed';
 }
 
 export interface ExportConfig {
@@ -909,3 +1549,163 @@ export function createDefaultUpdateSchedule(): UpdateSchedule {
     staleAlertDays: 2,
   };
 }
+
+// ============================================================================
+// 打磨日志域（规格书 3.4 打磨成果摘要）
+// ============================================================================
+
+/**
+ * 打磨日志单条条目。
+ * 每次打磨会话（进入打磨台 → 退出/返回编辑器）自动生成一条，持久化到项目数据。
+ * 用于追溯成长轨迹，回答"我上次改了什么、改完效果如何"。
+ */
+export interface PolishLogEntry {
+  /** 日志 ID */
+  id: string;
+  /** 会话开始时间（ISO 字符串） */
+  startedAt: string;
+  /** 会话结束时间（ISO 字符串） */
+  finishedAt: string;
+  /** 耗时分钟数 */
+  durationMinutes: number;
+  /** 本次回收的伏笔数 */
+  foreshadowsResolved: number;
+  /** 本次调整的节奏处数 */
+  pacingAdjusted: number;
+  /** 本次修复的角色弧光处数 */
+  arcFixed: number;
+  /** 本次新增的灵感卡数 */
+  newInspirations: number;
+  /** 本次创建的快照数 */
+  snapshotsCreated: number;
+  /** 成果摘要文本（由 generatePolishSummary 生成） */
+  summary: string;
+  /** 结束时的健康度评级（good/warn/bad，来自 healthReport.summary） */
+  healthLevel?: 'good' | 'warn' | 'bad';
+}
+
+// ============================================================================
+// 读者评论素材回流（规格书 3.3）
+// ============================================================================
+
+/** 评论回流目标阶段：AI 归类后汇入哪个打磨阶段 */
+export type ReviewReflowTarget =
+  | 'foreshadow'   // 汇入深度校验-伏笔（如读者猜到伏笔走向）
+  | 'character'    // 汇入骨架-角色活跃度（如配角太久没出现）
+  | 'pacing'       // 汇入章节-节奏（如某章反派动机不足）
+  | 'structure'    // 汇入骨架-结构（如情节不合理）
+  | 'other';
+
+/** 单条读者评论回流记录 */
+export interface ReviewReflowEntry {
+  id: string;
+  projectId: string;
+  /** 原始评论摘要（用户粘贴） */
+  content: string;
+  /** AI 归类结果 */
+  target: ReviewReflowTarget;
+  /** AI 给出的处置建议 */
+  suggestion: string;
+  /** 关联的章节/角色/伏笔 ID（可选） */
+  relatedChapterId?: string;
+  relatedCharacterId?: string;
+  relatedForeshadowId?: string;
+  /** 是否已处理（创作者点掉后归档） */
+  resolved: boolean;
+  createdAt: string;
+}
+
+// ============================================================================
+// 灵感缺口智能提示（规格书阶段1-3）
+// ============================================================================
+
+/** 灵感缺口类型 */
+export type InspirationGapKind =
+  | 'missing-character'    // 缺关键角色（如反派/导师）
+  | 'missing-foreshadow'   // 缺伏笔铺垫
+  | 'missing-conflict'     // 缺冲突支撑
+  | 'missing-setting'      // 缺世界观设定
+  | 'weak-motivation';     // 主角动机单薄
+
+/** 单条灵感缺口提示 */
+export interface InspirationGap {
+  id: string;
+  kind: InspirationGapKind;
+  /** 缺口描述 */
+  description: string;
+  /** AI 给出的填补建议 */
+  suggestion: string;
+  /** 关联的章节/角色 ID（可选） */
+  relatedChapterId?: string;
+  relatedCharacterId?: string;
+  /** 是否已忽略（创作者点掉后不再提示） */
+  ignored: boolean;
+  /** 来源：blueprint=打磨台蓝图反向推断，editor=编辑器写作时触发回流（规格书 3.2/阶段1-3） */
+  source?: 'blueprint' | 'editor';
+  /** 创建时间（编辑器回流时用于排序与去重） */
+  createdAt?: string;
+}
+
+// ============================================================================
+// 全局撤销栈（规格书 3.5 Ctrl+Z）
+// ============================================================================
+
+/** 撤销操作类型 */
+export type UndoableActionKind =
+  | 'chapter-add'
+  | 'chapter-delete'
+  | 'chapter-update'
+  | 'chapter-reorder'
+  | 'foreshadow-add'
+  | 'foreshadow-update'
+  | 'foreshadow-delete'
+  | 'character-add'
+  | 'character-update'
+  | 'character-delete'
+  | 'branch-merge';
+
+/** 单条撤销记录：保存操作前的快照，用于 Ctrl+Z 还原 */
+export interface UndoEntry {
+  id: string;
+  kind: UndoableActionKind;
+  /** 操作描述（用于撤销提示 toast） */
+  description: string;
+  /** 操作时间戳 */
+  timestamp: number;
+  /** 还原函数：调用即回滚此次操作 */
+  undo: () => void;
+}
+
+// ============================================================================
+// 骨架可交互结构时间轴（规格书阶段2-1）
+// ============================================================================
+
+/** 时间轴上的关键事件节点 */
+export interface SkeletonTimelineEvent {
+  id: string;
+  /** 事件标题 */
+  title: string;
+  /** 所在卷/部进度位置（0-100 百分比） */
+  position: number;
+  /** 情节强度 0-100 */
+  intensity: number;
+  /** 是否高潮位（创作者手动标记，AI 据此填中间） */
+  isClimax: boolean;
+  /** 关联章节 ID（可选） */
+  chapterId?: string;
+  /** 是否被标红为逻辑断层点 */
+  isFault: boolean;
+  /** 断层原因（isFault=true 时） */
+  faultReason?: string;
+}
+
+/** 节奏预设：高潮位分布 */
+export interface PacingPreset {
+  id: string;
+  label: string;
+  /** 高潮位在进度轴上的百分比位置列表 */
+  climaxPositions: number[];
+  /** 描述 */
+  description: string;
+}
+

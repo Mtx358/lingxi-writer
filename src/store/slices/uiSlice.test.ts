@@ -32,6 +32,11 @@ const { memoryStore, mockStorage, toastMock } = vi.hoisted(() => {
     set: vi.fn(async (key: string, value: unknown): Promise<void> => {
       memoryStore.set(key, value);
     }),
+    setMany: vi.fn(async (entries: Record<string, unknown>): Promise<void> => {
+      for (const [key, value] of Object.entries(entries)) {
+        memoryStore.set(key, value);
+      }
+    }),
     remove: vi.fn(async (key: string): Promise<void> => {
       memoryStore.delete(key);
     }),
@@ -766,8 +771,8 @@ describe('uiSlice', () => {
     });
 
     it('连续 add 追加到末尾', () => {
-      useAppStore.getState().addAISuggestion({ type: 'polish', title: '1', content: '', reasoning: '', contextUsed: [] });
-      useAppStore.getState().addAISuggestion({ type: 'polish', title: '2', content: '', reasoning: '', contextUsed: [] });
+      useAppStore.getState().addAISuggestion({ type: 'polish', title: '1', content: '<p>a</p>', reasoning: '', contextUsed: [] });
+      useAppStore.getState().addAISuggestion({ type: 'polish', title: '2', content: '<p>b</p>', reasoning: '', contextUsed: [] });
       const suggestions = useAppStore.getState().aiSuggestions;
       expect(suggestions).toHaveLength(2);
       expect(suggestions[0].title).toBe('1');
@@ -775,9 +780,19 @@ describe('uiSlice', () => {
     });
 
     it('clearAISuggestions 清空列表', () => {
-      useAppStore.getState().addAISuggestion({ type: 'polish', title: 'x', content: '', reasoning: '', contextUsed: [] });
+      useAppStore.getState().addAISuggestion({ type: 'polish', title: 'x', content: '<p>x</p>', reasoning: '', contextUsed: [] });
       useAppStore.getState().clearAISuggestions();
       expect(useAppStore.getState().aiSuggestions).toEqual([]);
+    });
+
+    it('空内容建议被过滤（stream 失败吞错返空串的防御）', () => {
+      useAppStore.getState().clearAISuggestions();
+      useAppStore.getState().addAISuggestion({ type: 'polish', title: 'empty', content: '', reasoning: '', contextUsed: [] });
+      useAppStore.getState().addAISuggestion({ type: 'polish', title: 'whitespace', content: '   \n  ', reasoning: '', contextUsed: [] });
+      useAppStore.getState().addAISuggestion({ type: 'polish', title: 'valid', content: '<p>ok</p>', reasoning: '', contextUsed: [] });
+      const suggestions = useAppStore.getState().aiSuggestions;
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].title).toBe('valid');
     });
   });
 
@@ -809,7 +824,9 @@ describe('uiSlice', () => {
     it('同步更新内存 + 调用 saveAISettings 持久化', async () => {
       await useAppStore.getState().updateAISettings({ provider: 'openai', apiKey: 'k' });
       expect(useAppStore.getState().aiSettings.provider).toBe('openai');
-      expect((useAppStore.getState().aiSettings as AISettings).apiKey).toBe('k');
+      // 保存成功后 store 中的明文 apiKey 立即重置为 'configured' 哨兵，
+      // 避免明文密钥长期驻留渲染层内存（XSS 后可通过 store 读到）
+      expect((useAppStore.getState().aiSettings as AISettings).apiKey).toBe('configured');
       expect(mockStorage.saveAISettings).toHaveBeenCalled();
     });
 

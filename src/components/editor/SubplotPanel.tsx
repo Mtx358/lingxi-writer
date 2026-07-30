@@ -8,6 +8,7 @@ import {
   Clock,
   CheckCircle,
 } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '@/store/useAppStore';
 import { confirm } from '@/hooks/useConfirm';
 import {
@@ -50,12 +51,24 @@ const SubplotCard = memo(function SubplotCard({
   chapterOptions: Array<{ id: string; title: string }>;
   chapterIdSet: Set<string>;
 }) {
-  const characters = useAppStore(s => s.characters);
-  const foreshadows = useAppStore(s => s.foreshadows);
-  const updateSubplot = useAppStore(s => s.updateSubplot);
-  const deleteSubplot = useAppStore(s => s.deleteSubplot);
-  const progressSubplot = useAppStore(s => s.progressSubplot);
-  const currentChapterId = useAppStore(s => s.currentChapterId);
+  // 合并为单个 useShallow 订阅：此前 6 个独立 useAppStore 调用会注册 6 个订阅，
+  // N 张卡片实例化时产生 6N 个订阅；characters/foreshadows 任一变化都会让全部卡片重渲染。
+  // useShallow 合并后单卡片仅 1 个订阅，且 actions 引用稳定不触发重渲染
+  const {
+    characters,
+    foreshadows,
+    updateSubplot,
+    deleteSubplot,
+    progressSubplot,
+    currentChapterId,
+  } = useAppStore(useShallow(s => ({
+    characters: s.characters,
+    foreshadows: s.foreshadows,
+    updateSubplot: s.updateSubplot,
+    deleteSubplot: s.deleteSubplot,
+    progressSubplot: s.progressSubplot,
+    currentChapterId: s.currentChapterId,
+  })));
 
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(subplot.title);

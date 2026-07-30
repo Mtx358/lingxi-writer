@@ -265,8 +265,18 @@ export default function ConflictPanel({ onClose }: ConflictPanelProps) {
                   }`}
                 >
                   <div
-                    className="p-2.5 cursor-pointer"
+                    className="p-2.5 cursor-pointer focus:outline-none focus:ring-1 focus:ring-amber-400/50"
+                    role="button"
+                    tabIndex={0}
+                    aria-expanded={isExpanded}
+                    aria-label={`${isExpanded ? '折叠' : '展开'}冲突详情：${TYPE_LABELS[issue.type] || issue.type}`}
                     onClick={() => setExpandedId(isExpanded ? null : issue.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setExpandedId(isExpanded ? null : issue.id);
+                      }
+                    }}
                   >
                     <div className="flex items-start gap-2">
                       <Icon className={`w-4 h-4 flex-shrink-0 mt-0.5 ${config.color}`} />

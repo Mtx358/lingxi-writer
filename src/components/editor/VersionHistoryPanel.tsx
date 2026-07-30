@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { History, Save, Clock, RotateCcw, X, Check, ChevronRight, FileText, Trash2, Loader2, MapPin } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
+import { useShallow } from 'zustand/react/shallow';
 import type { ChapterVersion } from '@/types';
 import { formatDate } from '@/utils/storage';
 import { computeHtmlBlockDiff, applyHtmlDiffRejections } from '@/utils/diff';
@@ -13,15 +14,29 @@ interface VersionHistoryPanelProps {
 }
 
 export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProps) {
-  const currentChapterId = useAppStore(s => s.currentChapterId);
-  const chapters = useAppStore(s => s.chapters);
-  const versions = useAppStore(s => s.versions);
-  const saveVersion = useAppStore(s => s.saveVersion);
-  const restoreVersion = useAppStore(s => s.restoreVersion);
-  const updateChapterContent = useAppStore(s => s.updateChapterContent);
-  const bumpContentEpoch = useAppStore(s => s.bumpContentEpoch);
-  const deleteVersion = useAppStore(s => s.deleteVersion);
-  const setPendingScrollTo = useAppStore(s => s.setPendingScrollTo);
+  // 合并为单个 useShallow 订阅：此前 9 个独立 useAppStore 调用注册 9 个订阅，
+  // 版本面板在 diff 计算期间频繁更新；合并后仅 1 个订阅 + shallow 比较
+  const {
+    currentChapterId,
+    chapters,
+    versions,
+    saveVersion,
+    restoreVersion,
+    updateChapterContent,
+    bumpContentEpoch,
+    deleteVersion,
+    setPendingScrollTo,
+  } = useAppStore(useShallow(s => ({
+    currentChapterId: s.currentChapterId,
+    chapters: s.chapters,
+    versions: s.versions,
+    saveVersion: s.saveVersion,
+    restoreVersion: s.restoreVersion,
+    updateChapterContent: s.updateChapterContent,
+    bumpContentEpoch: s.bumpContentEpoch,
+    deleteVersion: s.deleteVersion,
+    setPendingScrollTo: s.setPendingScrollTo,
+  })));
   const [selectedVersion, setSelectedVersion] = useState<ChapterVersion | null>(null);
   // 统一使用 HTML 块级 diff 作为单一数据源，消除行级/块级双轨索引映射
   const [htmlDiffResult, setHtmlDiffResult] = useState<HtmlBlockDiff[]>([]);
@@ -90,6 +105,8 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
       setRejectedBlocks(new Set());
       setExpandedBlocks(new Set());
     }
+    // 无定时器需清理，显式返回 undefined 以满足 noImplicitReturns
+    return undefined;
   }, [selectedVersion, currentChapter]);
 
   // 镜像 showSaveDialog 状态，供 Esc 监听器读取最新值（避免闭包陈旧）
@@ -257,6 +274,7 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
       {showSaveDialog && (
         <div className="p-3 border-b border-ink-800/50 bg-ink-800/30">
           <input
+            aria-label="版本备注"
             value={versionName}
             onChange={(e) => setVersionName(e.target.value)}
             placeholder="版本备注（可选）..."
@@ -313,11 +331,20 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
               {sortedVersions.map((version) => (
                 <div
                   key={version.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setSelectedVersion(version)}
-                  className="w-full p-2 rounded text-left hover:bg-ink-800/50 transition-colors group cursor-pointer"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setSelectedVersion(version);
+                    }
+                  }}
+                  aria-label={`查看版本 ${version.description || `版本 ${version.version}`}`}
+                  className="w-full p-2 rounded text-left hover:bg-ink-800/50 transition-colors group cursor-pointer focus:outline-none focus:ring-1 focus:ring-amber-400/50"
                 >
                   <div className="flex items-center gap-2">
-                    <Clock className="w-3.5 h-3.5 text-ink-500 flex-shrink-0" />
+                    <Clock className="w-3.5 h-3.5 text-ink-500 flex-shrink-0" aria-hidden="true" />
                     <span className="text-sm text-ink-200 flex-1 truncate">
                       {version.description || `版本 ${version.version}`}
                     </span>
@@ -332,7 +359,7 @@ export default function VersionHistoryPanel({ onClose }: VersionHistoryPanelProp
                     >
                       <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                     </button>
-                    <ChevronRight className="w-4 h-4 text-ink-600 group-hover:text-ink-400 flex-shrink-0" />
+                    <ChevronRight className="w-4 h-4 text-ink-600 group-hover:text-ink-400 flex-shrink-0" aria-hidden="true" />
                   </div>
                   <div className="flex items-center justify-between mt-1 ml-5.5">
                     <span className="text-[10px] text-ink-500">

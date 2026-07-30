@@ -9,6 +9,28 @@
 import '@testing-library/jest-dom/vitest';
 import { vi, beforeEach } from 'vitest';
 
+// ============ Node 23+ 内置 localStorage 兜底 ============
+// Node 23+ 在全局注入了简化版 localStorage（仅 getItem/setItem/removeItem/key/length），
+// 缺少 clear()，且会在 jsdom 实例化前覆盖 globalThis.localStorage。测试中大量用
+// localStorage.clear() 清理状态会抛 "clear is not a function"（影响 useTheme/safeStorage/
+// storage/localStorageAdapter.security 等约 70 个测试）。
+// 此处在最早处补全 clear 实现：用已存储键逐个 removeItem 实现清空，幂等且无副作用。
+// jsdom 真正的 localStorage 实例若有 clear() 会直接调用自身；缺失时用兜底。
+const _ls = (typeof globalThis !== 'undefined' ? globalThis.localStorage : undefined) as
+  | (Storage & { clear?: () => void })
+  | undefined;
+if (_ls && typeof _ls.clear !== 'function') {
+  _ls.clear = function clear() {
+    // 用快照避免遍历中修改索引
+    const keys: string[] = [];
+    for (let i = 0; i < _ls.length; i++) {
+      const k = _ls.key(i);
+      if (k !== null) keys.push(k);
+    }
+    for (const k of keys) _ls.removeItem(k);
+  };
+}
+
 // ============ window.electronAPI mock ============
 // 渲染层代码大量依赖 window.electronAPI.storage / ai / file 等 IPC。
 // 单元测试中不真正跨进程通信，统一 mock 为内存实现，让被测代码可正常运行。
@@ -44,6 +66,11 @@ const electronApiMock = {
   storage: {
     get: vi.fn(storageGetImpl),
     set: vi.fn(storageSetImpl),
+    setMany: vi.fn(async (entries: Record<string, unknown>): Promise<void> => {
+      for (const [key, value] of Object.entries(entries)) {
+        await storageSetImpl(key, value);
+      }
+    }),
     remove: vi.fn(storageRemoveImpl),
     patchProjects: vi.fn(storagePatchProjectsImpl),
     readFileBase64: vi.fn().mockResolvedValue(null),

@@ -87,6 +87,10 @@ export const isElectron = (): boolean => {
 export interface StorageAPI {
   get: <T>(key: string, defaultValue: T) => Promise<T>;
   set: <T>(key: string, value: T) => Promise<void>;
+  // 批量写入：一次 IPC 写入多个 key，把一次项目保存的 8 次 storage.set 合并为 1 次 IPC，
+  // 既减少往返延迟，又从根本上避免触发 storage:write 令牌桶限流。
+  // 任一 key 写入失败时通过 toast 告知用户，但不会中断其他 key 的写入
+  setMany: (entries: Record<string, unknown>) => Promise<void>;
   remove: (key: string) => Promise<void>;
 
   readProjectFile: (filePath: string) => Promise<{

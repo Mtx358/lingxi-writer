@@ -306,6 +306,38 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
     issues.push(...conflictDetector.detectGlobalConflicts(mainChapters));
 
     set({ conflicts: issues });
+
+    // 规格书 3.2 / 阶段1-3：编辑器写作时触发的缺口提示，自动回流到打磨台灵感缺口汇总。
+    // detectConflicts 在编辑器侧触发（写作后冲突检测），其中"缺口类"冲突映射为灵感缺口，
+    // 通过 addInspirationGap 去重追加到 inspirationGaps，打磨台 InspirationCanvasPanel 统一展示。
+    // 映射规则（仅 info 级、明确属于"缺素材"语义的冲突才回流，避免噪音）：
+    //   setting/info「设定引用但关键词未出现」→ missing-setting（缺世界观设定）
+    //   character/info「角色长期未出场」→ missing-character（缺关键角色戏份）
+    // addInspirationGap 内部按 kind+description 去重，重复触发不会堆积。
+    const addInspirationGap = get().addInspirationGap;
+    if (typeof addInspirationGap === 'function') {
+      for (const issue of issues) {
+        if (issue.resolved) continue;
+        if (issue.type === 'setting' && issue.severity === 'info') {
+          addInspirationGap({
+            kind: 'missing-setting',
+            description: issue.description,
+            suggestion: issue.suggestion,
+            relatedChapterId: issue.chapterId,
+            source: 'editor',
+          });
+        } else if (issue.type === 'character' && issue.severity === 'info'
+          && /没有出场|连续.*章/.test(issue.description)) {
+          addInspirationGap({
+            kind: 'missing-character',
+            description: issue.description,
+            suggestion: issue.suggestion,
+            relatedChapterId: issue.chapterId,
+            source: 'editor',
+          });
+        }
+      }
+    }
   },
 
   resolveConflict: (issueId: string) => {
@@ -317,6 +349,12 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
   },
 
   addAISuggestion: (suggestion: Omit<AISuggestion, 'id' | 'timestamp'>) => {
+    // 空内容防御：stream 函数失败时吞错返回 ''，若上游未正确拦截会触发 onSuccess('')
+    // 写入空建议卡片。此处作为最后防线过滤空内容，避免误导用户"采纳"空内容到编辑器。
+    if (!suggestion.content || suggestion.content.trim() === '') {
+      console.warn('addAISuggestion: 已过滤空内容建议', { type: suggestion.type, title: suggestion.title });
+      return;
+    }
     const newSuggestion: AISuggestion = { ...suggestion, id: generateId(), timestamp: new Date().toISOString() };
     set(state => ({ aiSuggestions: [...state.aiSuggestions, newSuggestion] }));
   },
@@ -362,6 +400,11 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
       if (!ok) {
         // 持久化失败：内存值保留（用户当前会话仍可用），仅提示用户
         toast.error('AI 设置保存失败', '主进程写入失败，请检查磁盘空间或文件权限');
+      } else if (updates.apiKey) {
+        // 安全加固：保存成功后立即把 store 中的明文 apiKey 重置为 'configured' 哨兵，
+        // 避免明文密钥长期驻留渲染层内存（XSS 后可通过 useAppStore.getState().aiSettings.apiKey 读到）。
+        // hasApiKey 标志保留为 true 供 UI 判断"已配置"。
+        set(state => ({ aiSettings: { ...state.aiSettings, apiKey: 'configured', hasApiKey: true } }));
       }
     } catch (e) {
       logError('Failed to save AI settings', e);

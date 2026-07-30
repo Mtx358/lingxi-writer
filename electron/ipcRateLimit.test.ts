@@ -121,28 +121,42 @@ describe('ipcRateLimit', () => {
         limiter.check('storage:read', 1);
       }
       expect(limiter.check('storage:read', 1)).toBeInstanceOf(RateLimitError);
-      // storage:write 是不同 channel，独立桶（capacity=5）
-      for (let i = 0; i < 5; i++) {
-        expect(limiter.check('storage:write', 1)).toBeNull();
+      // storage:write 是不同 channel，独立桶（capacity=500, refillPerSec=100）
+      // 冻结时间：refillPerSec=100 极高，真实时间下 500 次循环期间会按流逝时间补充令牌，
+      // 导致第 501 次可能不超限（refill 行为由「令牌补充」describe 单独覆盖）
+      vi.useFakeTimers();
+      try {
+        for (let i = 0; i < 500; i++) {
+          expect(limiter.check('storage:write', 1)).toBeNull();
+        }
+        expect(limiter.check('storage:write', 1)).toBeInstanceOf(RateLimitError);
+      } finally {
+        vi.useRealTimers();
       }
-      expect(limiter.check('storage:write', 1)).toBeInstanceOf(RateLimitError);
     });
   });
 
   // -------------------- 不同 channel 不同配置 --------------------
   describe('channel 配置', () => {
-    it('写操作 capacity 比读操作小', () => {
+    it('写操作 capacity 比读操作大（写操作更频繁，放宽限流）', () => {
       // storage:read capacity=10
       for (let i = 0; i < 10; i++) {
         expect(limiter.check('storage:read', 1)).toBeNull();
       }
       expect(limiter.check('storage:read', 1)).toBeInstanceOf(RateLimitError);
 
-      // storage:write capacity=5
-      for (let i = 0; i < 5; i++) {
-        expect(limiter.check('storage:write', 1)).toBeNull();
+      // storage:write capacity=500（auto-save + 素材编辑 + 章节切换会快速触发）
+      // 冻结时间：refillPerSec=100 极高，真实时间下 500 次循环期间会补充令牌，
+      // 导致第 501 次可能不超限（refill 行为由「令牌补充」describe 单独覆盖）
+      vi.useFakeTimers();
+      try {
+        for (let i = 0; i < 500; i++) {
+          expect(limiter.check('storage:write', 1)).toBeNull();
+        }
+        expect(limiter.check('storage:write', 1)).toBeInstanceOf(RateLimitError);
+      } finally {
+        vi.useRealTimers();
       }
-      expect(limiter.check('storage:write', 1)).toBeInstanceOf(RateLimitError);
     });
 
     it('ai:proxyStream capacity=2（AI 调用最严格）', () => {
@@ -180,11 +194,18 @@ describe('ipcRateLimit', () => {
 
     it('configure 不影响其他 channel', () => {
       limiter.configure('storage:read', { capacity: 3, refillPerSec: 0.5 });
-      // storage:write 仍用默认 capacity=5
-      for (let i = 0; i < 5; i++) {
-        expect(limiter.check('storage:write', 1)).toBeNull();
+      // storage:write 仍用默认 capacity=500, refillPerSec=100
+      // 冻结时间：refillPerSec=100 极高，真实时间下 500 次循环期间会补充令牌，
+      // 导致第 501 次可能不超限（refill 行为由「令牌补充」describe 单独覆盖）
+      vi.useFakeTimers();
+      try {
+        for (let i = 0; i < 500; i++) {
+          expect(limiter.check('storage:write', 1)).toBeNull();
+        }
+        expect(limiter.check('storage:write', 1)).toBeInstanceOf(RateLimitError);
+      } finally {
+        vi.useRealTimers();
       }
-      expect(limiter.check('storage:write', 1)).toBeInstanceOf(RateLimitError);
     });
   });
 
@@ -240,6 +261,7 @@ describe('ipcRateLimit', () => {
       const channels = Object.keys(__test__.DEFAULT_CONFIGS);
       expect(channels).toContain('storage:read');
       expect(channels).toContain('storage:write');
+      expect(channels).toContain('storage:writeBatch');
       expect(channels).toContain('storage:remove');
       expect(channels).toContain('storage:patchProjects');
       expect(channels).toContain('storage:readFileBase64');
@@ -268,10 +290,10 @@ describe('ipcRateLimit', () => {
       expect(channels).toContain('system:checkCrashRecovery');
     });
 
-    it('读操作 capacity >= 写操作 capacity', () => {
+    it('写操作 capacity > 读操作 capacity（写操作更频繁，放宽限流）', () => {
       const readCap = __test__.DEFAULT_CONFIGS['storage:read'].capacity;
       const writeCap = __test__.DEFAULT_CONFIGS['storage:write'].capacity;
-      expect(readCap).toBeGreaterThan(writeCap);
+      expect(writeCap).toBeGreaterThan(readCap);
     });
 
     it('ai:proxyStream capacity 最小（2）', () => {

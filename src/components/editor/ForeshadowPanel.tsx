@@ -63,6 +63,7 @@ export default function ForeshadowPanel() {
       {showAdd && (
         <div className="p-3 border-b border-ink-800/50 bg-ink-800/30">
           <input
+            aria-label="伏笔名称"
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleAdd()}

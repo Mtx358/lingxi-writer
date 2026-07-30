@@ -22,6 +22,8 @@ import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import path from 'node:path';
 
 const hoisted = vi.hoisted(() => {
+  const _path = require('node:path');
+  const _os = require('node:os');
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const fsMock = {
     readFile: vi.fn(),
@@ -45,7 +47,8 @@ const hoisted = vi.hoisted(() => {
     write: vi.fn(),
   };
   return {
-    TEST_USERDATA: '/tmp/lingxi-test-userdata-backup-handler',
+    TEST_USERDATA: _path.join(_os.tmpdir(), 'lingxi-test-userdata-backup-handler'),
+    tmpdir: _os.tmpdir(),
     handlers,
     fsMock,
     loggerMock,
@@ -56,8 +59,8 @@ vi.mock('electron', () => ({
   app: {
     getPath: vi.fn((name: string) => {
       if (name === 'userData') return hoisted.TEST_USERDATA;
-      if (name === 'home') return '/tmp/lingxi-test-home-backup-handler';
-      return '/tmp';
+      if (name === 'home') return path.join(hoisted.tmpdir, 'lingxi-test-home-backup-handler');
+      return hoisted.tmpdir;
     }),
   },
   ipcMain: {

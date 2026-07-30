@@ -17,29 +17,11 @@ export const HISTORY_MAX_LENGTH = 50;
 /** 行级 Diff 字符上限，超过则截断以防止主线程阻塞 */
 export const DIFF_CHAR_LIMIT = 1000;
 
-/** AI 流式请求 IPC 超时（毫秒），5 分钟 */
-export const AI_STREAM_TIMEOUT = 300000;
-
-/** IPC 默认超时（毫秒） */
-export const IPC_DEFAULT_TIMEOUT = 30000;
-
-/** 预览文本截取长度（搜索结果、连接测试等） */
-export const PREVIEW_TEXT_LENGTH = 50;
-
-/** 自动备份间隔（毫秒），5 分钟 */
-export const AUTO_BACKUP_INTERVAL = 5 * 60 * 1000;
-
-/** 文件备份保留数量 */
-export const BACKUP_KEEP_COUNT = 5;
-
 /** 章节最大嵌套层级：levelType 仅 5 种（book/volume/part/section/chapter），超过后类型重复 */
 export const CHAPTER_MAX_LEVEL = 5;
 
 /** AI 流式输出渲染节流间隔（毫秒）：避免逐 chunk 插入导致编辑器频繁重渲染 */
 export const AI_STREAM_THROTTLE_MS = 120;
-
-/** characterFocus 引用类型：'id' = 角色 ID（默认）；'name' = 角色名（旧数据兼容） */
-export const CHARACTER_FOCUS_TYPE = 'id' as const;
 
 /** 编辑器内容防抖写入 store 的间隔（毫秒），避免每次按键触发状态更新和磁盘 IO */
 export const EDITOR_CONTENT_UPDATE_DEBOUNCE = 500;

@@ -63,10 +63,17 @@ export function useAIStream() {
     // 4 个流式 handler 共用的 StreamHandler。
     // onChunk 累积 chunk（调用方通过 onChunk 控制，通常 setStreamingContent(prev => prev + chunk)）；
     // onError 处理流式过程中的错误（不抛出，仅 toast）。换视角/多版本不会触发 onChunk/onError。
+    //
+    // errorOccurred 标记：stream 函数（continue/expand/polish）的 catch 块采用"吞错+回调+返空串"
+    // 模式——onError 被调用但 Promise resolve 为 ''，外层 try/catch 永远捕获不到。
+    // 若不标记，await 成功后 onSuccess('') 会被触发，向 store 写入空内容建议卡片。
+    // 此处与 useEditorAI 的 errorOccurredRef 模式对齐：onError 中置位，await 后据此跳过 onSuccess。
+    let errorOccurred = false;
     const handler: StreamHandler = {
       onChunk: (chunk: string) => config.onChunk?.(chunk),
       onComplete: () => {},
       onError: (error: Error) => {
+        errorOccurred = true;
         console.error('AI stream error:', error);
         toast.error(config.errorTitle, error.message || '请检查网络或 API 配置');
       },
@@ -74,8 +81,10 @@ export function useAIStream() {
 
     try {
       const result = await streamFn(handler, signal);
-      // 被用户主动中止时不写入 store，避免残缺内容进入建议列表（与原逻辑一致）
-      if (!signal.aborted && config.onSuccess) {
+      // 被用户主动中止或 stream 内部吞错时均不写入 store：
+      // - signal.aborted：用户主动中止，避免残缺内容进入建议列表
+      // - errorOccurred：stream catch 已 toast 提示，避免空串触发 onSuccess 写入空建议
+      if (!signal.aborted && !errorOccurred && config.onSuccess) {
         config.onSuccess(result);
       }
     } catch (e) {

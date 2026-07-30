@@ -115,6 +115,11 @@ export default function ReviewPage() {
         // 旧请求会把 store 切回当前 projectId；此处检查无法撤销已发生的写入，
         // 但能阻止后续若添加的 setState 等副作用落到已卸载/已切换的组件上
         if (cancelled) return;
+      } catch (e) {
+        if (!cancelled) {
+          console.error('ReviewPage 加载项目失败:', e);
+          toast.error('项目加载失败', '请返回首页重试，或检查项目文件是否可访问');
+        }
       } finally {
         if (!cancelled) setProjectLoading(false);
       }

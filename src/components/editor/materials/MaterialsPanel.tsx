@@ -57,6 +57,16 @@ export default function MaterialsPanel() {
       : materials.filter(m => m.type === filter).sort(sortByPinnedAndTime);
   }, [materials, filter]);
 
+  // 各类型素材计数：此前在 render 体 MATERIAL_TYPES.map 内逐类型 filter（O(types × materials) per render），
+  // 改为单次遍历预计算 Record，render 时直接查表
+  const countByType = useMemo(() => {
+    const counts = {} as Record<Material['type'], number>;
+    for (const m of materials) {
+      counts[m.type] = (counts[m.type] ?? 0) + 1;
+    }
+    return counts;
+  }, [materials]);
+
   // 筛选切换时重置分批渲染计数，避免新列表沿用旧的截断位置
   useEffect(() => {
     setRenderCount(INITIAL_BATCH);
@@ -123,7 +133,7 @@ export default function MaterialsPanel() {
           全部 ({materials.length})
         </button>
         {MATERIAL_TYPES.map(type => {
-          const count = materials.filter(m => m.type === type).length;
+          const count = countByType[type] ?? 0;
           if (count === 0) return null;
           return (
             <button

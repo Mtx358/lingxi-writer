@@ -31,8 +31,18 @@ function MaterialItem({
   return (
     <div
       style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 120px' }}
+      role="button"
+      tabIndex={0}
+      aria-expanded={isExpanded}
+      aria-label={`${isExpanded ? '折叠' : '展开'}素材：${mat.title}`}
       onClick={() => onToggleExpand(mat)}
-      className="card p-2.5 cursor-pointer hover:border-ink-600/50 transition-colors group"
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onToggleExpand(mat);
+        }
+      }}
+      className="card p-2.5 cursor-pointer hover:border-ink-600/50 transition-colors group focus:outline-none focus:ring-1 focus:ring-amber-400/50"
     >
       <div className="flex items-start gap-2">
         <div className={`w-7 h-7 rounded flex-shrink-0 flex items-center justify-center ${TYPE_COLORS[mat.type]}`}>
@@ -94,8 +104,18 @@ function MaterialItem({
                       {isImage ? (
                         <div className="flex items-start gap-2">
                           <div
+                            role="button"
+                            tabIndex={0}
+                            aria-label={`查看附件大图：${att.name}`}
                             onClick={(e) => { e.stopPropagation(); onOpenAttachment(att); }}
-                            className="w-20 h-20 rounded bg-ink-700/50 overflow-hidden cursor-pointer flex-shrink-0 group relative"
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                onOpenAttachment(att);
+                              }
+                            }}
+                            className="w-20 h-20 rounded bg-ink-700/50 overflow-hidden cursor-pointer flex-shrink-0 group relative focus:outline-none focus:ring-1 focus:ring-amber-400/50"
                             title="点击查看大图"
                           >
                             <ImageFallback src={`file://${att.path}`} name={att.name} />

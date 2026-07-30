@@ -7,7 +7,7 @@
  */
 import type { StateCreator } from 'zustand';
 import type { AppState } from '../appState';
-import type { Chapter, ChapterLevelType } from '@/types';
+import type { Chapter, ChapterLevelType, ChapterComment } from '@/types';
 import { DEFAULT_CHAPTER_STATUS, levelToLevelType } from '@/types';
 import { storage, generateId, countWords, markDirty } from '@/utils/storage';
 import { SEARCH_DEBOUNCE_DELAY, CHAPTER_MAX_LEVEL } from '@/constants/config';
@@ -18,7 +18,8 @@ import { registerProjectCleanup } from '../projectCleanup';
 type ChapterSlice = Pick<AppState,
   | 'chapters' | 'currentChapterId' | 'pendingEditorInsert' | 'pendingScrollTo' | 'contentEpoch' | 'isAIGenerating'
   | 'addChapter' | 'updateChapter' | 'batchUpdateChapterOrder' | 'deleteChapter' | 'moveChapter' | 'setCurrentChapter'
-  | 'updateChapterContent' | 'setPendingEditorInsert' | 'setPendingScrollTo' | 'bumpContentEpoch' | 'setAIGenerating'>;
+  | 'updateChapterContent' | 'setPendingEditorInsert' | 'setPendingScrollTo' | 'bumpContentEpoch' | 'setAIGenerating'
+  | 'comments' | 'addComment' | 'updateComment' | 'deleteComment' | 'getComments'>;
 
 // 伏笔提及计数重算防抖计时器（避免每次按键都全量扫描章节）
 let foreshadowRecomputeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -57,6 +58,7 @@ export const createChapterSlice: StateCreator<AppState, [], [], ChapterSlice> = 
   pendingScrollTo: null,
   contentEpoch: 0,
   isAIGenerating: false,
+  comments: {},
 
   addChapter: (parentId: string | null, title: string, order?: number, levelType?: ChapterLevelType) => {
     const { chapters, currentProjectId } = get();
@@ -95,10 +97,23 @@ export const createChapterSlice: StateCreator<AppState, [], [], ChapterSlice> = 
       ...chapters.map(c => c.parentId === parentId && c.order >= newOrder ? { ...c, order: c.order + 1 } : c),
       newChapter,
     ];
+    // 撤销快照：set 之前捕获旧状态
+    const prevChapters = chapters;
+    const prevCurrentChapterId = get().currentChapterId;
     set({ chapters: updatedChapters, currentChapterId: newChapter.id });
     markDirty();
     // 章节结构变化后立即重算伏笔提及距离，避免 chaptersSinceMention 与阅读顺序错位
     get().recomputeForeshadowMentions();
+    // 记录到全局撤销栈（Ctrl+Z 可回退此次新增）
+    get().pushUndo({
+      kind: 'chapter-add',
+      description: `新增章节「${title}」`,
+      undo: () => {
+        set({ chapters: prevChapters, currentChapterId: prevCurrentChapterId });
+        markDirty();
+        get().recomputeForeshadowMentions();
+      },
+    });
     return newChapter;
   },
 
@@ -124,8 +139,23 @@ export const createChapterSlice: StateCreator<AppState, [], [], ChapterSlice> = 
     const updatedChapters = chapters.map(c =>
       orderMap.has(c.id) ? { ...c, order: orderMap.get(c.id)!, updatedAt: now } : c
     );
+    // 撤销快照
+    const prevChapters = chapters;
     set({ chapters: updatedChapters });
     markDirty();
+    // 章节顺序变化后立即重算伏笔提及距离，保证 chaptersSinceMention / 提及顺序与新阅读顺序一致。
+    // 与 addChapter 行为对齐：正向路径也必须重算，否则伏笔看板会与拖拽后的章节顺序错位。
+    get().recomputeForeshadowMentions();
+    // 记录到全局撤销栈（Ctrl+Z 可回退此次重排）
+    get().pushUndo({
+      kind: 'chapter-reorder',
+      description: `重排 ${updates.length} 个章节顺序`,
+      undo: () => {
+        set({ chapters: prevChapters });
+        markDirty();
+        get().recomputeForeshadowMentions();
+      },
+    });
   },
 
   deleteChapter: (chapterId: string) => {
@@ -134,6 +164,14 @@ export const createChapterSlice: StateCreator<AppState, [], [], ChapterSlice> = 
 
     const chapter = chapters.find(c => c.id === chapterId);
     if (!chapter) return;
+
+    // 撤销快照：在级联清理前捕获所有将被改动的状态
+    const prevChapters = chapters;
+    const prevCurrentChapterId = get().currentChapterId;
+    const prevForeshadows = get().foreshadows;
+    const prevSubplots = get().subplots;
+    const prevVersions = { ...get().versions };
+    const prevHistories = { ...get().histories };
 
     // H3 性能修复：旧 getAllChildren 每层递归 filter 全量 chapters（O(n) per level）→ O(n×D)。
     // 改为先构建 parentId → children 索引一次，DFS 收集所有后代 ID，O(n)。
@@ -212,6 +250,23 @@ export const createChapterSlice: StateCreator<AppState, [], [], ChapterSlice> = 
     markDirty();
     // 章节结构变化后立即重算伏笔提及距离，避免 chaptersSinceMention 与阅读顺序错位
     get().recomputeForeshadowMentions();
+    // 记录到全局撤销栈（Ctrl+Z 可恢复被删章节及其级联引用）
+    get().pushUndo({
+      kind: 'chapter-delete',
+      description: `删除章节「${chapter.title}」`,
+      undo: () => {
+        set({
+          chapters: prevChapters,
+          currentChapterId: prevCurrentChapterId,
+          foreshadows: prevForeshadows,
+          subplots: prevSubplots,
+          versions: prevVersions,
+          histories: prevHistories,
+        });
+        markDirty();
+        get().recomputeForeshadowMentions();
+      },
+    });
   },
 
   moveChapter: (chapterId: string, newParentId: string | null, newOrder: number): boolean => {
@@ -376,6 +431,11 @@ export const createChapterSlice: StateCreator<AppState, [], [], ChapterSlice> = 
       get().recomputeForeshadowMentions();
       foreshadowRecomputeTimer = null;
     }, SEARCH_DEBOUNCE_DELAY);
+
+    // 规格书 3.2 编辑器双向无缝联动：编辑器正文保存后，打磨台数据自动刷新、相关问题自动复检。
+    // 此处仅置标记位 polishRecheckNeeded=true，由打磨台（PolishPage）挂载/监听时据此自动重跑健康度诊断，
+    // 复检完成后由打磨台调用 clearPolishRecheckNeeded 清标记。避免在编辑器热路径直接触发昂贵诊断。
+    get().markPolishRecheckNeeded();
   },
 
   setPendingEditorInsert: (content) => {
@@ -392,5 +452,71 @@ export const createChapterSlice: StateCreator<AppState, [], [], ChapterSlice> = 
 
   setAIGenerating: (v: boolean) => {
     set({ isAIGenerating: v });
+  },
+
+  // ===== 章节批注 =====
+  addComment: (chapterId, content, type = 'issue', anchorText) => {
+    const pid = get().currentProjectId;
+    if (!pid) return;
+    const now = new Date().toISOString();
+    const comment: ChapterComment = {
+      id: generateId(),
+      chapterId,
+      projectId: pid,
+      content,
+      type,
+      resolved: false,
+      anchorText,
+      createdAt: now,
+      updatedAt: now,
+    };
+    set(state => ({
+      comments: {
+        ...state.comments,
+        [chapterId]: [...(state.comments[chapterId] || []), comment],
+      },
+    }));
+    markDirty();
+  },
+
+  updateComment: (commentId, updates) => {
+    const { comments } = get();
+    let changed = false;
+    const next: Record<string, ChapterComment[]> = {};
+    for (const [cid, list] of Object.entries(comments)) {
+      const mapped = list.map(c => {
+        if (c.id === commentId) {
+          changed = true;
+          return { ...c, ...updates, updatedAt: new Date().toISOString() };
+        }
+        return c;
+      });
+      next[cid] = mapped;
+    }
+    if (changed) {
+      set({ comments: next });
+      markDirty();
+    }
+  },
+
+  deleteComment: (commentId) => {
+    const { comments } = get();
+    let changed = false;
+    const next: Record<string, ChapterComment[]> = {};
+    for (const [cid, list] of Object.entries(comments)) {
+      const filtered = list.filter(c => {
+        if (c.id === commentId) { changed = true; return false; }
+        return true;
+      });
+      next[cid] = filtered;
+    }
+    if (changed) {
+      set({ comments: next });
+      markDirty();
+    }
+  },
+
+  getComments: (chapterId) => {
+    return get().comments[chapterId] || [];
   },
 });

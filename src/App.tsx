@@ -10,6 +10,7 @@ const EditorPage = lazy(() => import("@/pages/EditorPage"));
 const ReviewPage = lazy(() => import("@/pages/ReviewPage"));
 const ExportPage = lazy(() => import("@/pages/ExportPage"));
 const DashboardPage = lazy(() => import("@/pages/DashboardPage"));
+const PolishPage = lazy(() => import("@/pages/PolishPage"));
 
 function PageFallback() {
   return (
@@ -101,6 +102,7 @@ export default function App() {
             <Route path="/project/:projectId/review" element={<RouteBoundary><ReviewPage /></RouteBoundary>} />
             <Route path="/project/:projectId/export" element={<RouteBoundary><ExportPage /></RouteBoundary>} />
             <Route path="/project/:projectId/dashboard" element={<RouteBoundary><DashboardPage /></RouteBoundary>} />
+            <Route path="/project/:projectId/polish" element={<RouteBoundary><PolishPage /></RouteBoundary>} />
           </Routes>
         </Suspense>
       </Router>

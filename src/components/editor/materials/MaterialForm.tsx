@@ -15,6 +15,7 @@ export function MaterialForm({ title, type, onTitleChange, onTypeChange, onAdd, 
   return (
     <div className="p-3 border-b border-ink-800/50 bg-ink-800/30 space-y-2">
       <input
+        aria-label="素材标题"
         value={title}
         onChange={(e) => onTitleChange(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && onAdd()}

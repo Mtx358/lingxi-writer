@@ -54,28 +54,34 @@ const DEFAULT_CONFIGS: Record<string, RateLimitConfig> = {
   'system:checkCrashRecovery': { capacity: 5, refillPerSec: 0.5 },
   'ai:loadSettings': { capacity: 5, refillPerSec: 0.5 },
 
-  // 写操作组（容量 5，每秒补充 0.33 = 20/min）
-  'storage:write': { capacity: 5, refillPerSec: 1 / 3 },
-  'storage:remove': { capacity: 5, refillPerSec: 1 / 3 },
-  'storage:patchProjects': { capacity: 5, refillPerSec: 1 / 3 },
-  'storage:writeFile': { capacity: 5, refillPerSec: 1 / 3 },
-  'storage:writeFileBuffer': { capacity: 5, refillPerSec: 1 / 3 },
-  // 导出文件专用通道（容量 5，每秒补充 0.33 = 20/min）
-  // 与 storage:writeFileBuffer 同档：导出是用户主动操作频率天然受限，
-  // 但仍需防 XSS 后刷写向用户目录写入大量文件
-  'export:writeFile': { capacity: 5, refillPerSec: 1 / 3 },
-  'export:writeFileBuffer': { capacity: 5, refillPerSec: 1 / 3 },
-  'storage:backupProject': { capacity: 3, refillPerSec: 0.2 },
-  'projectFile:write': { capacity: 5, refillPerSec: 1 / 3 },
-  'projectFile:backup': { capacity: 3, refillPerSec: 0.2 },
-  'projectFile:restoreBackup': { capacity: 3, refillPerSec: 0.2 },
-  'ai:saveSettings': { capacity: 3, refillPerSec: 0.2 },
-  'material:saveAttachment': { capacity: 3, refillPerSec: 0.2 },
-  'material:deleteAttachment': { capacity: 5, refillPerSec: 1 / 3 },
-  'file:openExternal': { capacity: 5, refillPerSec: 1 / 3 },
+  // 写操作组（容量 500，每秒补充 100 = 6000/min）
+  // 一次保存项目会顺序触发 8 次 storage:write（chapters/characters/settings/foreshadows/
+  // materials/versions/patchProjects 等），capacity=30 时 4 次保存即超限。
+  // capacity=500 可支撑 62 次保存的 burst，refillPerSec=100 支撑 12.5 次/秒持续保存。
+  // XSS 防护：主进程对单 key 有 50MB size limit，每秒 100 次写入无法撑爆磁盘
+  'storage:write': { capacity: 500, refillPerSec: 100 },
+  'storage:writeBatch': { capacity: 500, refillPerSec: 100 },
+  'storage:remove': { capacity: 500, refillPerSec: 100 },
+  'storage:patchProjects': { capacity: 500, refillPerSec: 100 },
+  'storage:writeFile': { capacity: 500, refillPerSec: 100 },
+  'storage:writeFileBuffer': { capacity: 500, refillPerSec: 100 },
+  // 导出文件专用通道（与 storage:writeFileBuffer 同档）
+  'export:writeFile': { capacity: 500, refillPerSec: 100 },
+  'export:writeFileBuffer': { capacity: 500, refillPerSec: 100 },
+  'storage:backupProject': { capacity: 10, refillPerSec: 1 },
+  'projectFile:write': { capacity: 500, refillPerSec: 100 },
+  'projectFile:backup': { capacity: 10, refillPerSec: 1 },
+  'projectFile:restoreBackup': { capacity: 10, refillPerSec: 1 },
+  'ai:saveSettings': { capacity: 10, refillPerSec: 1 },
+  'material:saveAttachment': { capacity: 15, refillPerSec: 2 },
+  'material:deleteAttachment': { capacity: 20, refillPerSec: 3 },
+  'file:openExternal': { capacity: 20, refillPerSec: 3 },
 
   // AI 调用（容量 2，每秒补充 0.1 = 6/min）
+  // proxyStream 与 proxyLLM 都是带密钥的 AI API 调用，XSS 后可借此高频刷请求
+  // 烧光用户 OpenAI 配额，故两者限流保持一致，均回落到 6 次/分钟
   'ai:proxyStream': { capacity: 2, refillPerSec: 0.1 },
+  'ai:proxyLLM': { capacity: 2, refillPerSec: 0.1 },
   'ai:abort': { capacity: 10, refillPerSec: 1 },
 
   // 文件对话框（容量 2，每秒补充 0.16 = 10/min）

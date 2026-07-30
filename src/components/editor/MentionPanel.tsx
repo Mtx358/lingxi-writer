@@ -185,6 +185,7 @@ export default function MentionPanel({ editor, position, onClose }: MentionPanel
       <input
         ref={inputRef}
         type="text"
+        aria-label="搜索角色"
         value={query}
         onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0); }}
         placeholder="搜索..."

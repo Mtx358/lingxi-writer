@@ -4,7 +4,7 @@
  * 由原 OutlinePolishPanel.tsx 中 CharactersTab / CharacterArcCard 两个内部组件
  * 原样搬迁而来。按风险等级排序展示角色弧光卡片，支持展开查看弧光缺口 + 出场章节。
  */
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Users, ChevronRight, ChevronDown, CheckCircle } from 'lucide-react';
 import type { OutlinePolishReport, CharacterArcAnalysis } from '@/types';
 import { CHARACTER_ROLE_LABELS } from '@/types';
@@ -16,6 +16,14 @@ export function CharacterArcPanel({
   report: OutlinePolishReport | null;
   onJumpTo: (chapterId: string | null) => void;
 }) {
+  // useMemo 收敛按风险排序，避免每次 render 重算 sort。
+  // 必须在 early return 之前调用（Rules of Hooks）；riskOrder 移入回调避免每渲染新建对象
+  const sorted = useMemo(() => {
+    if (!report) return [];
+    const riskOrder: Record<CharacterArcAnalysis['risk'], number> = { high: 0, medium: 1, low: 2, ok: 3 };
+    return [...report.characterArcs].sort((a, b) => riskOrder[a.risk] - riskOrder[b.risk]);
+  }, [report]);
+
   if (!report || report.characterArcs.length === 0) {
     return (
       <div className="text-center py-8">
@@ -25,9 +33,6 @@ export function CharacterArcPanel({
       </div>
     );
   }
-
-  const riskOrder: Record<CharacterArcAnalysis['risk'], number> = { high: 0, medium: 1, low: 2, ok: 3 };
-  const sorted = [...report.characterArcs].sort((a, b) => riskOrder[a.risk] - riskOrder[b.risk]);
 
   return (
     <div className="space-y-2">
@@ -69,9 +74,12 @@ function CharacterArcCard({
     <div className={`p-3 rounded-lg border ${riskColor}`}>
       <button
         onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
+        aria-controls={`character-arc-${arc.characterId}-detail`}
+        aria-label={`${expanded ? '折叠' : '展开'}${arc.characterName}人物弧光详情`}
         className="w-full flex items-center gap-2 text-left"
       >
-        {expanded ? <ChevronDown className="w-3.5 h-3.5 text-ink-500" /> : <ChevronRight className="w-3.5 h-3.5 text-ink-500" />}
+        {expanded ? <ChevronDown className="w-3.5 h-3.5 text-ink-500" aria-hidden="true" /> : <ChevronRight className="w-3.5 h-3.5 text-ink-500" aria-hidden="true" />}
         <span className="text-sm text-ink-100 flex-1 truncate">{arc.characterName}</span>
         <span className="text-[10px] text-ink-400">{CHARACTER_ROLE_LABELS[arc.role]}</span>
         <span className={`text-[10px] px-1.5 py-px rounded ${riskText} bg-ink-800/50`}>{riskLabel}</span>
@@ -97,7 +105,7 @@ function CharacterArcCard({
       )}
 
       {expanded && (
-        <div className="mt-2 pt-2 border-t border-ink-700/50 space-y-2">
+        <div id={`character-arc-${arc.characterId}-detail`} className="mt-2 pt-2 border-t border-ink-700/50 space-y-2">
           {arc.arcGaps.length > 0 ? (
             <>
               <div className="text-[10px] text-ink-500">弧光缺口</div>

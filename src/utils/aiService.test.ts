@@ -1219,7 +1219,8 @@ describe('previewCausalImpact', () => {
     const result = await previewCausalImpact('把章节提前', 'ch-1', [makeChapter()], [], []);
     expect(result.overallRisk).toBe('high');
     expect(result.impacts.some(i => i.type === 'broken')).toBe(true);
-    expect(result.impacts.some(i => i.type === 'weakened')).toBe(false);
+    // 时间错位既断裂章节因果（broken），也弱化角色弧光节奏（weakened）
+    expect(result.impacts.some(i => i.type === 'weakened')).toBe(true);
   });
 
   it('mock "延后"关键词 → broken, high risk', async () => {
@@ -1230,7 +1231,9 @@ describe('previewCausalImpact', () => {
   it('mock 其他描述 → weakened, medium risk', async () => {
     const result = await previewCausalImpact('修改章节标题', 'ch-1', [makeChapter()], [], []);
     expect(result.overallRisk).toBe('medium');
-    expect(result.impacts.every(i => i.type === 'weakened')).toBe(true);
+    // 轻微改动：以弱化（weakened）为主，无严重断裂（broken）；可能附带轻微波动（missing）
+    expect(result.impacts.some(i => i.type === 'broken')).toBe(false);
+    expect(result.impacts.some(i => i.type === 'weakened')).toBe(true);
   });
 
   it('mock 返回 changeDescription/targetId/generatedAt', async () => {

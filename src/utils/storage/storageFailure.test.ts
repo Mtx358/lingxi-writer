@@ -190,6 +190,8 @@ describe('存储失败测试（B2）', () => {
         // 清理上一个测试遗留的 dirty
         return triggerSave().then(() => undefined);
       }
+      // 无遗留 dirty：显式返回 undefined 以满足 noImplicitReturns
+      return undefined;
     });
 
     afterEach(() => {

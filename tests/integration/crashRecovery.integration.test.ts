@@ -35,6 +35,11 @@ const { memoryStore, mockStorage } = vi.hoisted(() => {
     set: vi.fn(async (key: string, value: unknown): Promise<void> => {
       memoryStore.set(key, value);
     }),
+    setMany: vi.fn(async (entries: Record<string, unknown>): Promise<void> => {
+      for (const [key, value] of Object.entries(entries)) {
+        memoryStore.set(key, value);
+      }
+    }),
     remove: vi.fn(async (key: string): Promise<void> => {
       memoryStore.delete(key);
     }),
@@ -125,6 +130,7 @@ beforeEach(() => {
   memoryStore.clear();
   mockStorage.get.mockClear();
   mockStorage.set.mockClear();
+  mockStorage.setMany.mockClear();
   mockStorage.remove.mockClear();
   mockStorage.patchProjects.mockClear();
   mockStorage.saveRecoveryDraft.mockClear();

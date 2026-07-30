@@ -58,6 +58,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 已限定 materials 子目录，见 main.ts storage:readFileBase64
     read: (key: string) => invokeWithTimeout('storage:read', 10000, key),
     write: (key: string, value: unknown) => invokeWithTimeout('storage:write', 10000, key, value),
+    // 批量写入：一次 IPC 写入多个 key，把 8 次 storage:write 合并成 1 次，
+    // 避免触发令牌桶限流。返回 Record<key, boolean> 标识每个 key 的结果
+    writeBatch: (entries: Record<string, unknown>) =>
+      invokeWithTimeout('storage:writeBatch', 30000, entries) as Promise<Record<string, boolean>>,
     remove: (key: string) => invokeWithTimeout('storage:remove', 10000, key),
     listProjectDirs: () => invokeWithTimeout('storage:listProjectDirs', 5000),
     backupProject: (projectId: string, keepCount?: number) =>

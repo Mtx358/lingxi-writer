@@ -76,9 +76,22 @@ async function loadStoredAISettings(): Promise<{
   try {
     const filePath = resolveFilePath('aiSettings');
     const data = await fs.readFile(filePath, 'utf-8');
-    const settings = JSON.parse(data);
+    // JSON.parse 返回 any；磁盘文件可能被篡改/损坏/迁移，直接 .apiKey 访问会在
+    // 非对象 JSON（如 "x" / 123 / null）上抛错或静默返回 undefined。先收窄为
+    // unknown 再断言为带可选字段的 record，对每个字段做 typeof 守卫，避免信任未验证结构
+    const raw: unknown = JSON.parse(data);
+    const settings = (raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? raw as Record<string, unknown>
+      : {}) as {
+        apiKey?: unknown;
+        provider?: unknown;
+        baseUrl?: unknown;
+        model?: unknown;
+        temperature?: unknown;
+        maxTokens?: unknown;
+      };
     let apiKey = '';
-    if (settings.apiKey && safeStorage.isEncryptionAvailable()) {
+    if (typeof settings.apiKey === 'string' && settings.apiKey && safeStorage.isEncryptionAvailable()) {
       try {
         apiKey = safeStorage.decryptString(Buffer.from(settings.apiKey, 'base64'));
       } catch (e) {
@@ -88,11 +101,11 @@ async function loadStoredAISettings(): Promise<{
     }
     return {
       apiKey,
-      provider: settings.provider || 'mock',
-      baseUrl: settings.baseUrl || '',
-      model: settings.model || '',
-      temperature: settings.temperature ?? 0.7,
-      maxTokens: settings.maxTokens ?? 2000,
+      provider: typeof settings.provider === 'string' ? settings.provider : 'mock',
+      baseUrl: typeof settings.baseUrl === 'string' ? settings.baseUrl : '',
+      model: typeof settings.model === 'string' ? settings.model : '',
+      temperature: typeof settings.temperature === 'number' && Number.isFinite(settings.temperature) ? settings.temperature : 0.7,
+      maxTokens: typeof settings.maxTokens === 'number' && Number.isFinite(settings.maxTokens) ? settings.maxTokens : 2000,
     };
   } catch {
     return { apiKey: '', provider: 'mock', baseUrl: '', model: '', temperature: 0.7, maxTokens: 2000 };

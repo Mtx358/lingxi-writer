@@ -118,18 +118,27 @@ ${foreshadowDigest || '（无）'}
   "impacts": [
     {
       "type": "broken|weakened|missing",
-      "chapterId": "受影响章节ID（若有）",
+      "entityType": "chapter|character|foreshadow|setting",
+      "entityId": "受影响实体ID（章节ID/角色ID/伏笔ID/设定项ID，若有）",
+      "entityName": "受影响实体名称（章节标题/角色名/伏笔标题/设定项名）",
       "description": "影响描述（30-80字）",
       "alternative": "替代方案建议（30-80字）"
     }
   ]
 }
 
-type 含义：
-- broken：直接断裂的情节
-- weakened：弱化的人物动机/伏笔
-- missing：缺失的关键铺垫
+type 含义（按影响程度）：
+- broken：🔴 严重断裂，直接断裂的情节/逻辑
+- weakened：🟡 部分影响，弱化的人物动机/伏笔
+- missing：🟢 轻微波动，缺失的关键铺垫或轻微不一致
 
+entityType 含义（按受影响实体分类）：
+- chapter：受影响的是章节（章节顺序/因果衔接/场景）
+- character：受影响的是角色（弧光/动机/出场）
+- foreshadow：受影响的是伏笔（埋设/推进/回收）
+- setting：受影响的是设定（世界观/规则/物品）
+
+每条 impact 必须明确 entityType，让影响树能按"章节/人物/伏笔/设定"分类展示。
 只返回 JSON。`;
 
       const result = await llmClient.callLLM(prompt, '你是资深小说结构编辑，擅长推演大纲改动的连锁影响。只返回 JSON。');
@@ -139,16 +148,47 @@ type 含义：
         const r = parsed as Record<string, unknown>;
         const validRisk = ['high', 'medium', 'low'];
         const validTypes: CausalImpactItem['type'][] = ['broken', 'weakened', 'missing'];
+        const validEntityTypes: CausalImpactItem['entityType'][] = ['chapter', 'character', 'foreshadow', 'setting'];
         const impacts: CausalImpactItem[] = Array.isArray(r.impacts)
           ? (r.impacts as unknown[])
               .filter((x): x is Record<string, unknown> => !!x && typeof x === 'object')
               .map(x => {
-                const cid = x.chapterId ? String(x.chapterId) : undefined;
-                const ch = cid ? topChapters.find(c => c.id === cid) : undefined;
+                const cid = x.entityId ? String(x.entityId) : (x.chapterId ? String(x.chapterId) : undefined);
+                // 优先按 entityType 解析实体名；entityType 缺失时按 chapterId 反推
+                const rawEntityType = String(x.entityType || '').toLowerCase();
+                let entityType: CausalImpactItem['entityType'] | undefined;
+                if (validEntityTypes.includes(rawEntityType as CausalImpactItem['entityType'])) {
+                  entityType = rawEntityType as CausalImpactItem['entityType'];
+                }
+                let entityName: string | undefined = x.entityName ? String(x.entityName) : undefined;
+                let chapterId: string | undefined;
+                let chapterTitle: string | undefined;
+                if (entityType === 'chapter' || (!entityType && cid)) {
+                  const ch = cid ? topChapters.find(c => c.id === cid) : undefined;
+                  if (ch) {
+                    chapterId = ch.id;
+                    chapterTitle = ch.title;
+                    entityType = entityType || 'chapter';
+                    entityName = entityName || ch.title;
+                  }
+                }
+                // 角色实体名回填
+                if (entityType === 'character' && !entityName) {
+                  const c = characters.find(ch => ch.id === cid);
+                  if (c) entityName = c.name;
+                }
+                // 伏笔实体名回填
+                if (entityType === 'foreshadow' && !entityName) {
+                  const f = foreshadows.find(fw => fw.id === cid);
+                  if (f) entityName = f.title;
+                }
                 return {
                   type: String(x.type) as CausalImpactItem['type'],
-                  chapterId: ch?.id,
-                  chapterTitle: ch?.title,
+                  entityType,
+                  entityId: cid,
+                  entityName,
+                  chapterId,
+                  chapterTitle,
                   description: String(x.description || '').slice(0, 300),
                   alternative: String(x.alternative || '').slice(0, 300),
                 };
@@ -169,31 +209,68 @@ type 含义：
   }
 
   await llmClient.delay(500);
-  // Mock：基于改动描述关键词生成可读影响项
+  // Mock：基于改动描述关键词生成可读影响项，并按实体类型分布
   const lower = changeDescription.toLowerCase();
   const impacts: CausalImpactItem[] = [];
+  // 从改动描述里识别可能涉及的角色/伏笔名，用于填入 entityName
+  const mentionedChar = characters.find(c => lower.includes(c.name.toLowerCase()));
+  const mentionedFs = foreshadows.find(f => lower.includes(f.title.toLowerCase()));
   if (lower.includes('死') || lower.includes('删除') || lower.includes('移除')) {
     impacts.push({
       type: 'broken',
+      entityType: 'character',
+      entityId: mentionedChar?.id,
+      entityName: mentionedChar?.name || '相关角色',
       description: '该角色/节点后续的关键作用将失去来源，相关情节断裂',
       alternative: '可补充一个替代载体（笔记/遗物/接班人）承接其功能',
     });
     impacts.push({
+      type: 'broken',
+      entityType: 'chapter',
+      description: '原定由该节点承担的关键章节失去功能支点，需重新分配',
+      alternative: '梳理该节点原承担的章节功能，逐项转移到其他角色或新设定',
+    });
+    impacts.push({
       type: 'weakened',
-      description: '与该节点相关的人物动机/伏笔失去支撑，合理性下降',
-      alternative: '将这部分功能转移到另一角色或新设定上',
+      entityType: 'foreshadow',
+      entityId: mentionedFs?.id,
+      entityName: mentionedFs?.title,
+      description: '与该节点相关的伏笔失去支撑，回收合理性下降',
+      alternative: '将这部分功能转移到另一角色或新设定上，伏笔回收点同步调整',
+    });
+    impacts.push({
+      type: 'missing',
+      entityType: 'setting',
+      description: '该节点原承载的少量设定细节需要在新载体上重新铺垫',
+      alternative: '在后续章节里以回忆/物品/对话形式补回关键设定信息',
     });
   } else if (lower.includes('提前') || lower.includes('延后')) {
     impacts.push({
       type: 'broken',
+      entityType: 'chapter',
       description: '原定时间线被打乱，前后章节的因果衔接出现错位',
       alternative: '重新调整相关章节顺序，并补足过渡桥段',
+    });
+    impacts.push({
+      type: 'weakened',
+      entityType: 'character',
+      description: '相关角色的出场节奏与情绪铺垫与新时间线不匹配',
+      alternative: '同步检查角色弧光曲线，必要时前置或后移铺垫段落',
     });
   } else {
     impacts.push({
       type: 'weakened',
+      entityType: 'foreshadow',
+      entityId: mentionedFs?.id,
+      entityName: mentionedFs?.title,
       description: '该改动可能影响相关伏笔的回收节奏与角色动机的连贯性',
       alternative: '同步检查关联伏笔与角色弧光，必要时补充铺垫',
+    });
+    impacts.push({
+      type: 'missing',
+      entityType: 'chapter',
+      description: '部分章节的衔接细节可能需要微调以适配新走向',
+      alternative: '在受影响章节增加一两句过渡描写即可消化',
     });
   }
   return {

@@ -23,13 +23,14 @@ import { useAppStore } from '@/store/useAppStore';
 import { DEFAULT_AI_SETTINGS } from '@/store/appState';
 import { clearOutlinePolishRequests } from '@/store/slices/outlinePolishSlice';
 import * as aiServiceModule from '@/utils/aiService';
-import type { Chapter, Project, Character, Foreshadow, OutlineIssue, Material, StructureVariant, ConflictLayer, CoreDriver, ChapterBeat, CausalImpactReport } from '@/types';
+import type { Chapter, Project, Character, Foreshadow, OutlineIssue, Material, StructureVariant, ConflictLayer, CoreDriver, ChapterBeat, CausalImpactReport, PacingPressureReport } from '@/types';
 
 // ============ 内存存储 mock ============
 const { mockStorage, toastMock } = vi.hoisted(() => {
   const mockStorage = {
     get: vi.fn(async <T>(_key: string, defaultValue: T): Promise<T> => defaultValue),
     set: vi.fn(async () => undefined),
+    setMany: vi.fn(async () => undefined),
     remove: vi.fn(async () => undefined),
     patchProjects: vi.fn(async () => null),
     saveRecoveryDraft: vi.fn().mockResolvedValue(undefined),
@@ -684,6 +685,384 @@ describe('outlinePolishSlice', () => {
     });
   });
 
+  // -------------------- 可交互节奏调校 --------------------
+  describe('可交互节奏调校（updatePacingPoint / resetPacingPoint）', () => {
+    const makePacingReport = (overrides: Partial<PacingPressureReport> = {}): PacingPressureReport => ({
+      generatedAt: '2025-01-01T00:00:00.000Z',
+      scope: 'all',
+      points: [
+        { chapterId: 'ch1', chapterTitle: '第一章', external: 40, emotional: 30, isBuffer: false, total: 70 },
+        { chapterId: 'ch2', chapterTitle: '第二章', external: 20, emotional: 10, isBuffer: true, total: 30 },
+      ],
+      issues: [],
+      ...overrides,
+    });
+
+    it('updatePacingPoint：修改 external 后 total 自动重算', () => {
+      useAppStore.setState({ lastPacingReport: makePacingReport() });
+      useAppStore.getState().updatePacingPoint('ch1', { external: 60 });
+      const report = useAppStore.getState().lastPacingReport!;
+      const ch1 = report.points.find(p => p.chapterId === 'ch1')!;
+      expect(ch1.external).toBe(60);
+      expect(ch1.emotional).toBe(30); // 未变
+      expect(ch1.total).toBe(90); // 60 + 30
+    });
+
+    it('updatePacingPoint：修改 emotional 后 total 自动重算', () => {
+      useAppStore.setState({ lastPacingReport: makePacingReport() });
+      useAppStore.getState().updatePacingPoint('ch1', { emotional: 50 });
+      const ch1 = useAppStore.getState().lastPacingReport!.points.find(p => p.chapterId === 'ch1')!;
+      expect(ch1.emotional).toBe(50);
+      expect(ch1.external).toBe(40); // 未变
+      expect(ch1.total).toBe(90);
+    });
+
+    it('updatePacingPoint：切换 isBuffer 不影响 total', () => {
+      useAppStore.setState({ lastPacingReport: makePacingReport() });
+      useAppStore.getState().updatePacingPoint('ch1', { isBuffer: true });
+      const ch1 = useAppStore.getState().lastPacingReport!.points.find(p => p.chapterId === 'ch1')!;
+      expect(ch1.isBuffer).toBe(true);
+      expect(ch1.total).toBe(70); // 40 + 30 不变
+    });
+
+    it('updatePacingPoint：值被限制在 0-100 范围', () => {
+      useAppStore.setState({ lastPacingReport: makePacingReport() });
+      useAppStore.getState().updatePacingPoint('ch1', { external: 150 });
+      expect(useAppStore.getState().lastPacingReport!.points.find(p => p.chapterId === 'ch1')!.external).toBe(100);
+      useAppStore.getState().updatePacingPoint('ch1', { emotional: -20 });
+      expect(useAppStore.getState().lastPacingReport!.points.find(p => p.chapterId === 'ch1')!.emotional).toBe(0);
+    });
+
+    it('updatePacingPoint：仅修改目标章节，其他章节不受影响', () => {
+      useAppStore.setState({ lastPacingReport: makePacingReport() });
+      useAppStore.getState().updatePacingPoint('ch1', { external: 80 });
+      const ch2 = useAppStore.getState().lastPacingReport!.points.find(p => p.chapterId === 'ch2')!;
+      expect(ch2.external).toBe(20);
+      expect(ch2.emotional).toBe(10);
+      expect(ch2.total).toBe(30);
+    });
+
+    it('updatePacingPoint：无报告时 noop', () => {
+      useAppStore.setState({ lastPacingReport: null });
+      expect(() => useAppStore.getState().updatePacingPoint('ch1', { external: 50 })).not.toThrow();
+      expect(useAppStore.getState().lastPacingReport).toBeNull();
+    });
+
+    it('resetPacingPoint：该章数值归零', () => {
+      useAppStore.setState({ lastPacingReport: makePacingReport() });
+      useAppStore.getState().resetPacingPoint('ch1');
+      const ch1 = useAppStore.getState().lastPacingReport!.points.find(p => p.chapterId === 'ch1')!;
+      expect(ch1.external).toBe(0);
+      expect(ch1.emotional).toBe(0);
+      expect(ch1.isBuffer).toBe(false);
+      expect(ch1.total).toBe(0);
+    });
+
+    it('resetPacingPoint：无报告时 noop', () => {
+      useAppStore.setState({ lastPacingReport: null });
+      expect(() => useAppStore.getState().resetPacingPoint('ch1')).not.toThrow();
+      expect(useAppStore.getState().lastPacingReport).toBeNull();
+    });
+  });
+
+  // -------------------- 读者共情校验 --------------------
+  describe('读者共情校验（runReaderEmpathyCheck）', () => {
+    it('无 currentProjectId 时 noop', async () => {
+      useAppStore.setState({ currentProjectId: null });
+      await useAppStore.getState().runReaderEmpathyCheck();
+      expect(useAppStore.getState().lastReaderEmpathyReport).toBeNull();
+    });
+
+    it('生成报告：含 points / issues / overallScore，scope=all', async () => {
+      useAppStore.setState({
+        chapters: [
+          makeChapter({ id: 'ch1', content: '<p>主角为了复仇，必须找到线索。他痛哭失声。</p>', wordCount: 800, order: 0 }),
+          makeChapter({ id: 'ch2', content: '<p>一旦失败将失去一切。代价沉重。</p>', wordCount: 1000, order: 1 }),
+        ],
+        characters: [makeCharacter()],
+      });
+      await useAppStore.getState().runReaderEmpathyCheck();
+      const report = useAppStore.getState().lastReaderEmpathyReport;
+      expect(report).not.toBeNull();
+      expect(report!.scope).toBe('all');
+      expect(report!.points).toHaveLength(2);
+      expect(report!.overallScore).toBeGreaterThanOrEqual(0);
+      expect(report!.overallScore).toBeLessThanOrEqual(100);
+      // 三维值都在 0-100
+      report!.points.forEach(p => {
+        expect(p.motivation).toBeGreaterThanOrEqual(0);
+        expect(p.motivation).toBeLessThanOrEqual(100);
+        expect(p.emotion).toBeGreaterThanOrEqual(0);
+        expect(p.emotion).toBeLessThanOrEqual(100);
+        expect(p.stakes).toBeGreaterThanOrEqual(0);
+        expect(p.stakes).toBeLessThanOrEqual(100);
+        expect(p.total).toBe(Math.round((p.motivation + p.emotion + p.stakes) / 3));
+      });
+    });
+
+    it('overallScore 等于各章 total 的平均', async () => {
+      useAppStore.setState({
+        chapters: [
+          makeChapter({ id: 'ch1', content: '<p>为了复仇</p>', wordCount: 100, order: 0 }),
+          makeChapter({ id: 'ch2', content: '<p>必须找到</p>', wordCount: 100, order: 1 }),
+        ],
+        characters: [],
+      });
+      await useAppStore.getState().runReaderEmpathyCheck();
+      const report = useAppStore.getState().lastReaderEmpathyReport!;
+      const expected = Math.round(report.points.reduce((s, p) => s + p.total, 0) / report.points.length);
+      expect(report.overallScore).toBe(expected);
+    });
+
+    it('scope 局部校验：仅校验指定章节及其后代（仅 chapter 级进入 points）', async () => {
+      useAppStore.setState({
+        chapters: [
+          makeChapter({ id: 'book1', level: 1, levelType: 'book', content: '', wordCount: 0 }),
+          makeChapter({ id: 'ch1', parentId: 'book1', level: 2, levelType: 'chapter', content: '<p>为了复仇</p>', wordCount: 100, order: 0 }),
+          makeChapter({ id: 'ch2', parentId: 'book1', level: 2, levelType: 'chapter', content: '<p>必须找到</p>', wordCount: 100, order: 1 }),
+        ],
+        characters: [],
+      });
+      await useAppStore.getState().runReaderEmpathyCheck('book1');
+      const report = useAppStore.getState().lastReaderEmpathyReport!;
+      expect(report.scope).toBe('book1');
+      // book1 + ch1 + ch2 都在 scope 内，但只有 chapter 级别进入 points
+      expect(report.points).toHaveLength(2);
+    });
+
+    it('无 chapter 级章节时返回空报告', async () => {
+      useAppStore.setState({
+        chapters: [makeChapter({ id: 'book1', levelType: 'book', content: '', wordCount: 0 })],
+        characters: [],
+      });
+      await useAppStore.getState().runReaderEmpathyCheck();
+      const report = useAppStore.getState().lastReaderEmpathyReport!;
+      expect(report.points).toHaveLength(0);
+      expect(report.issues).toHaveLength(0);
+      expect(report.overallScore).toBe(0);
+    });
+
+    it('内容含动机/情感/利益关键词时三维分数提升', async () => {
+      useAppStore.setState({
+        chapters: [
+          makeChapter({ id: 'ch1', content: '<p>无关键词的普通章节</p>', wordCount: 100, order: 0 }),
+          makeChapter({ id: 'ch2', content: '<p>为了复仇必须找到，他痛哭失声，一旦失败将失去一切</p>', wordCount: 100, order: 1 }),
+        ],
+        characters: [],
+      });
+      await useAppStore.getState().runReaderEmpathyCheck();
+      const report = useAppStore.getState().lastReaderEmpathyReport!;
+      const plain = report.points.find(p => p.chapterId === 'ch1')!;
+      const rich = report.points.find(p => p.chapterId === 'ch2')!;
+      expect(rich.motivation).toBeGreaterThan(plain.motivation);
+      expect(rich.emotion).toBeGreaterThan(plain.emotion);
+      expect(rich.stakes).toBeGreaterThan(plain.stakes);
+    });
+  });
+
+  // -------------------- 沙盒试运行前后对比 --------------------
+  describe('沙盒试运行（captureSandboxBaseline / clearSandboxBaseline / runSandboxVerification）', () => {
+    const makeIssue = (overrides: Partial<OutlineIssue> = {}): OutlineIssue => ({
+      id: 'issue-1',
+      dimension: 'structure',
+      severity: 'warning',
+      description: '问题',
+      suggestion: '建议',
+      ...overrides,
+    });
+
+    /** 构造一份可用的 lastOutlineReport（用于 captureSandboxBaseline） */
+    const makeReport = (overrides: Partial<{ issues: OutlineIssue[]; totalChapters: number; totalWords: number }> = {}) => ({
+      generatedAt: '2024-01-01T00:00:00.000Z',
+      scope: 'all' as const,
+      projectId: 'p1',
+      issues: overrides.issues ?? [makeIssue({ id: 'i1', severity: 'error', description: '结构断裂' })],
+      pacingCurve: [],
+      emotionCurve: [],
+      threeActRatio: [25, 50, 25] as [number, number, number],
+      characterArcs: [],
+      foreshadowDensity: [],
+      totalChapters: overrides.totalChapters ?? 3,
+      totalWords: overrides.totalWords ?? 3000,
+    });
+
+    it('captureSandboxBaseline：无诊断报告时 noop 并提示', () => {
+      useAppStore.setState({ lastOutlineReport: null, sandboxBaseline: null });
+      useAppStore.getState().captureSandboxBaseline();
+      expect(useAppStore.getState().sandboxBaseline).toBeNull();
+      expect(toastMock.warning).toHaveBeenCalled();
+    });
+
+    it('captureSandboxBaseline：有报告时写入快照，且清空旧对比报告', () => {
+      useAppStore.setState({
+        lastOutlineReport: makeReport({
+          issues: [
+            makeIssue({ id: 'i1', severity: 'error', description: '结构断裂' }),
+            makeIssue({ id: 'i2', severity: 'warning', description: '节奏拖沓' }),
+            makeIssue({ id: 'i3', severity: 'warning', description: '已忽略', ignored: true }),
+            makeIssue({ id: 'i4', severity: 'warning', description: '已解决', resolved: true }),
+          ],
+        }),
+        lastSandboxReport: { verdict: 'neutral' } as never,
+      });
+      useAppStore.getState().captureSandboxBaseline();
+      const baseline = useAppStore.getState().sandboxBaseline;
+      expect(baseline).not.toBeNull();
+      // 仅未忽略未解决的 issue 进入快照（i1 + i2）
+      expect(baseline!.issueDigests).toHaveLength(2);
+      expect(baseline!.totalIssues).toBe(2);
+      expect(baseline!.errorCount).toBe(1);
+      expect(baseline!.warningCount).toBe(1);
+      // 旧对比报告被清空
+      expect(useAppStore.getState().lastSandboxReport).toBeNull();
+      expect(toastMock.success).toHaveBeenCalled();
+    });
+
+    it('clearSandboxBaseline：清空基线与对比报告', () => {
+      useAppStore.setState({
+        sandboxBaseline: { capturedAt: '', totalIssues: 1, errorCount: 1, warningCount: 0, threeActRatio: [0, 0, 0], totalChapters: 0, totalWords: 0, issueDigests: [] } as never,
+        lastSandboxReport: { verdict: 'improved' } as never,
+      });
+      useAppStore.getState().clearSandboxBaseline();
+      expect(useAppStore.getState().sandboxBaseline).toBeNull();
+      expect(useAppStore.getState().lastSandboxReport).toBeNull();
+    });
+
+    it('runSandboxVerification：无 currentProjectId 时 noop', async () => {
+      useAppStore.setState({ currentProjectId: null, sandboxBaseline: { capturedAt: '' } as never });
+      await useAppStore.getState().runSandboxVerification();
+      expect(useAppStore.getState().lastSandboxReport).toBeNull();
+    });
+
+    it('runSandboxVerification：无基线时 noop 并提示', async () => {
+      useAppStore.setState({ sandboxBaseline: null });
+      await useAppStore.getState().runSandboxVerification();
+      expect(useAppStore.getState().lastSandboxReport).toBeNull();
+      expect(toastMock.warning).toHaveBeenCalled();
+    });
+
+    it('runSandboxVerification：基线有问题、修改后无问题 → verdict=improved，全部解决', async () => {
+      // 基线：1 个 error 问题
+      useAppStore.setState({
+        currentProjectId: 'p1',
+        sandboxBaseline: {
+          capturedAt: '2024-01-01T00:00:00.000Z',
+          totalIssues: 1,
+          errorCount: 1,
+          warningCount: 0,
+          threeActRatio: [25, 50, 25],
+          totalChapters: 1,
+          totalWords: 1000,
+          issueDigests: [{
+            id: 'old-i1',
+            dimension: 'structure',
+            severity: 'error',
+            description: '结构断裂',
+            chapterId: 'ch1',
+            chapterTitle: '第一章',
+          }],
+        } as never,
+        chapters: [makeChapter({ id: 'ch1', content: '<p>完整的章节内容，结构清晰，逻辑自洽，没有问题。</p>' })],
+        characters: [],
+        foreshadows: [],
+        lastOutlineReport: null,
+      });
+      // mock polishOutline 返回空 issues（修改后无问题）
+      vi.spyOn(aiServiceModule, 'polishOutline').mockResolvedValue([]);
+      await useAppStore.getState().runSandboxVerification();
+      const report = useAppStore.getState().lastSandboxReport;
+      expect(report).not.toBeNull();
+      expect(report!.verdict).toBe('improved');
+      expect(report!.resolvedIssues).toHaveLength(1);
+      expect(report!.newIssues).toHaveLength(0);
+      expect(report!.remainingIssues).toHaveLength(0);
+      // 指标：问题总数从 1 降到 0，方向 down，positive=true
+      const totalDelta = report!.metricDeltas.find(d => d.label === '问题总数')!;
+      expect(totalDelta.before).toBe(1);
+      expect(totalDelta.after).toBe(0);
+      expect(totalDelta.direction).toBe('down');
+      expect(totalDelta.positive).toBe(true);
+      // improved 路径触发 success toast
+      expect(toastMock.success).toHaveBeenCalledWith('验证闭环完成', expect.stringContaining('解决 1 个问题'));
+    });
+
+    it('runSandboxVerification：修改后新增问题 → verdict=regressed', async () => {
+      // 基线：无问题
+      useAppStore.setState({
+        currentProjectId: 'p1',
+        sandboxBaseline: {
+          capturedAt: '2024-01-01T00:00:00.000Z',
+          totalIssues: 0,
+          errorCount: 0,
+          warningCount: 0,
+          threeActRatio: [25, 50, 25],
+          totalChapters: 1,
+          totalWords: 1000,
+          issueDigests: [],
+        } as never,
+        chapters: [makeChapter({ id: 'ch1' })],
+        characters: [],
+        foreshadows: [],
+        lastOutlineReport: null,
+      });
+      // mock polishOutline 返回 1 个 error 问题（修改后新增）
+      vi.spyOn(aiServiceModule, 'polishOutline').mockResolvedValue([
+        makeIssue({ id: 'new-i1', dimension: 'logic', severity: 'error', description: '逻辑漏洞', chapterId: 'ch1', chapterTitle: '第一章' }),
+      ]);
+      await useAppStore.getState().runSandboxVerification();
+      const report = useAppStore.getState().lastSandboxReport!;
+      expect(report.verdict).toBe('regressed');
+      expect(report.resolvedIssues).toHaveLength(0);
+      expect(report.newIssues).toHaveLength(1);
+      expect(report.remainingIssues).toHaveLength(0);
+      // 指标：errorCount 从 0 升到 1，direction=up，positive=false
+      const errorDelta = report.metricDeltas.find(d => d.label === '必修问题')!;
+      expect(errorDelta.before).toBe(0);
+      expect(errorDelta.after).toBe(1);
+      expect(errorDelta.direction).toBe('up');
+      expect(errorDelta.positive).toBe(false);
+      // regressed 路径触发 warning toast
+      expect(toastMock.warning).toHaveBeenCalledWith('验证闭环完成', expect.stringContaining('需复核'));
+    });
+
+    it('runSandboxVerification：问题数量无净变化 → verdict=neutral', async () => {
+      // 基线：1 个 error（结构断裂）+ 1 个 warning（节奏拖沓）
+      useAppStore.setState({
+        currentProjectId: 'p1',
+        sandboxBaseline: {
+          capturedAt: '2024-01-01T00:00:00.000Z',
+          totalIssues: 2,
+          errorCount: 1,
+          warningCount: 1,
+          threeActRatio: [25, 50, 25],
+          totalChapters: 1,
+          totalWords: 1000,
+          issueDigests: [
+            { id: 'old-i1', dimension: 'structure', severity: 'error', description: '结构断裂', chapterId: 'ch1', chapterTitle: '第一章' },
+            { id: 'old-i2', dimension: 'pacing', severity: 'warning', description: '节奏拖沓', chapterId: 'ch1', chapterTitle: '第一章' },
+          ],
+        } as never,
+        chapters: [makeChapter({ id: 'ch1' })],
+        characters: [],
+        foreshadows: [],
+        lastOutlineReport: null,
+      });
+      // mock：解决结构断裂，但新增角色断层（error 数不变，净变化为 0）
+      vi.spyOn(aiServiceModule, 'polishOutline').mockResolvedValue([
+        makeIssue({ id: 'new-i1', dimension: 'character', severity: 'error', description: '角色断层', chapterId: 'ch1', chapterTitle: '第一章' }),
+        makeIssue({ id: 'old-i2', dimension: 'pacing', severity: 'warning', description: '节奏拖沓', chapterId: 'ch1', chapterTitle: '第一章' }),
+      ]);
+      await useAppStore.getState().runSandboxVerification();
+      const report = useAppStore.getState().lastSandboxReport!;
+      expect(report.verdict).toBe('neutral');
+      expect(report.resolvedIssues).toHaveLength(1); // 结构断裂已解决
+      expect(report.newIssues).toHaveLength(1);      // 角色断层新增
+      expect(report.remainingIssues).toHaveLength(1); // 节奏拖沓仍在
+      // neutral 路径触发 info toast
+      expect(toastMock.info).toHaveBeenCalledWith('验证闭环完成', expect.stringContaining('无净变化'));
+    });
+  });
+
   // -------------------- fetchConflictCompass --------------------
   describe('fetchConflictCompass', () => {
     it('无 coreDriver 时 noop', async () => {
@@ -1250,6 +1629,85 @@ describe('outlinePolishSlice', () => {
     });
   });
 
+  // -------------------- getForeshadowBoardItems 四栏分组 --------------------
+  describe('getForeshadowBoardItems 四栏分组', () => {
+    it('progressing 状态 → progressing 分组（推进中）', () => {
+      useAppStore.setState({
+        chapters: [makeChapter({ id: 'ch1', order: 1 })],
+        foreshadows: [makeForeshadow({ id: 'f1', status: 'progressing', plantedChapterId: 'ch1', payoffChapterId: null })],
+      });
+      const items = useAppStore.getState().getForeshadowBoardItems();
+      expect(items).toHaveLength(1);
+      expect(items[0].group).toBe('progressing');
+    });
+
+    it('planted 状态且未越过 payoff → pending 分组（待回收）', () => {
+      useAppStore.setState({
+        chapters: [
+          makeChapter({ id: 'ch1', order: 1 }),
+          makeChapter({ id: 'ch3', order: 3 }),
+        ],
+        foreshadows: [makeForeshadow({ id: 'f1', status: 'planted', plantedChapterId: 'ch1', payoffChapterId: 'ch3' })],
+      });
+      // currentOrder = 3（最大 order），payoffChapter.order = 3，未越过 → pending
+      const items = useAppStore.getState().getForeshadowBoardItems();
+      expect(items[0].group).toBe('pending');
+      expect(items[0].overdueChapters).toBe(0);
+    });
+
+    it('planted 状态且已越过 payoff → overdue 分组（逾期）', () => {
+      useAppStore.setState({
+        chapters: [
+          makeChapter({ id: 'ch1', order: 1 }),
+          makeChapter({ id: 'ch3', order: 3 }),
+          makeChapter({ id: 'ch5', order: 5 }),
+        ],
+        foreshadows: [makeForeshadow({ id: 'f1', status: 'planted', plantedChapterId: 'ch1', payoffChapterId: 'ch3' })],
+      });
+      // currentOrder = 5，payoffChapter.order = 3，已越过 → overdue
+      const items = useAppStore.getState().getForeshadowBoardItems();
+      expect(items[0].group).toBe('overdue');
+      expect(items[0].overdueChapters).toBe(2);
+    });
+
+    it('paid-off 状态 → paidoff 分组（已回收），即使已越过 payoff 章节', () => {
+      useAppStore.setState({
+        chapters: [
+          makeChapter({ id: 'ch1', order: 1 }),
+          makeChapter({ id: 'ch3', order: 3 }),
+          makeChapter({ id: 'ch5', order: 5 }),
+        ],
+        foreshadows: [makeForeshadow({ id: 'f1', status: 'paid-off', plantedChapterId: 'ch1', payoffChapterId: 'ch3' })],
+      });
+      const items = useAppStore.getState().getForeshadowBoardItems();
+      expect(items[0].group).toBe('paidoff');
+      expect(items[0].overdueChapters).toBe(0);
+    });
+
+    it('四栏同时存在：pending / progressing / paidoff / overdue', () => {
+      useAppStore.setState({
+        chapters: [
+          makeChapter({ id: 'ch1', order: 1 }),
+          makeChapter({ id: 'ch2', order: 2 }),
+          makeChapter({ id: 'ch3', order: 3 }),
+          makeChapter({ id: 'ch5', order: 5 }),
+        ],
+        foreshadows: [
+          makeForeshadow({ id: 'f-pending', status: 'planted', plantedChapterId: 'ch1', payoffChapterId: 'ch5' }),
+          makeForeshadow({ id: 'f-progressing', status: 'progressing', plantedChapterId: 'ch1', payoffChapterId: 'ch3' }),
+          makeForeshadow({ id: 'f-paidoff', status: 'paid-off', plantedChapterId: 'ch1', payoffChapterId: 'ch2' }),
+          makeForeshadow({ id: 'f-overdue', status: 'planted', plantedChapterId: 'ch1', payoffChapterId: 'ch2' }),
+        ],
+      });
+      const items = useAppStore.getState().getForeshadowBoardItems();
+      const byId = new Map(items.map(i => [i.foreshadowId, i]));
+      expect(byId.get('f-pending')!.group).toBe('pending');
+      expect(byId.get('f-progressing')!.group).toBe('progressing');
+      expect(byId.get('f-paidoff')!.group).toBe('paidoff');
+      expect(byId.get('f-overdue')!.group).toBe('overdue');
+    });
+  });
+
   // -------------------- enrichIssues 边界 --------------------
   describe('enrichIssues 边界', () => {
     it('issue 无 chapterTitle 但有 chapterId 时从 chapters 查找填充', async () => {
@@ -1340,6 +1798,39 @@ describe('outlinePolishSlice', () => {
       await useAppStore.getState().runOutlinePolish('a');
       const report = useAppStore.getState().lastOutlineReport!;
       expect(report).not.toBeNull();
+    });
+
+    it('非后代章节不在 scope 内（isDescendant 返回 false 路径）', async () => {
+      // vol1 下有 ch1；vol2 下有 ch2。scope=vol1 时 ch2 不应进入
+      useAppStore.setState({
+        chapters: [
+          makeChapter({ id: 'vol1', level: 1, levelType: 'volume', content: '', wordCount: 0 }),
+          makeChapter({ id: 'vol2', level: 1, levelType: 'volume', content: '', wordCount: 0 }),
+          makeChapter({ id: 'ch1', parentId: 'vol1', level: 2, levelType: 'chapter', content: '<p>a</p>', wordCount: 100, order: 0 }),
+          makeChapter({ id: 'ch2', parentId: 'vol2', level: 2, levelType: 'chapter', content: '<p>b</p>', wordCount: 100, order: 1 }),
+        ],
+        characters: [],
+        foreshadows: [],
+      });
+      await useAppStore.getState().runOutlinePolish('vol1');
+      const report = useAppStore.getState().lastOutlineReport!;
+      // scope=vol1：只有 ch1 进入，ch2 不进入
+      expect(report.totalChapters).toBe(1);
+    });
+
+    it('targetId 无 parentId 时直接返回 false（根节点查找）', async () => {
+      // scope 为一个不存在的章节 ID，所有章节的 parentId 链都不指向它
+      useAppStore.setState({
+        chapters: [
+          makeChapter({ id: 'ch1', parentId: null, level: 1, levelType: 'chapter', content: '<p>a</p>', wordCount: 100, order: 0 }),
+        ],
+        characters: [],
+        foreshadows: [],
+      });
+      // scope=不存在的 ID：没有任何章节匹配，mainChapters 为空
+      await useAppStore.getState().runOutlinePolish('nonexistent');
+      const report = useAppStore.getState().lastOutlineReport!;
+      expect(report.totalChapters).toBe(0);
     });
   });
 });

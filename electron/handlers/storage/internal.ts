@@ -30,7 +30,7 @@ export function resolveFilePath(key: string): string {
     if (underscoreIdx === -1) {
       // project_{id} 格式：指向项目主文件
       const resolved = path.join(getProjectsDir(), rest, 'main.json');
-      if (!resolved.startsWith(getProjectsDir())) throw new Error('Path traversal detected');
+      if (!isPathInside(resolved, getProjectsDir())) throw new Error('Path traversal detected');
       return resolved;
     }
     const projectId = rest.slice(0, underscoreIdx);
@@ -43,12 +43,26 @@ export function resolveFilePath(key: string): string {
       throw new Error('Invalid projectId');
     }
     const resolved = path.join(getProjectsDir(), projectId, `${subkey}.json`);
-    if (!resolved.startsWith(getProjectsDir())) throw new Error('Path traversal detected');
+    if (!isPathInside(resolved, getProjectsDir())) throw new Error('Path traversal detected');
     return resolved;
   }
   const resolved = path.join(getDataDir(), `${key}.json`);
-  if (!resolved.startsWith(getDataDir())) throw new Error('Path traversal detected');
+  if (!isPathInside(resolved, getDataDir())) throw new Error('Path traversal detected');
   return resolved;
+}
+
+/**
+ * 跨平台"路径是否位于 dir 内（含等于 dir 本身）"判断。
+ * 用 path.relative 计算相对分量，避免 startsWith 在混合分隔符（Windows 的 / vs \）
+ * 或同级目录前缀撞名（如 dataDir=/a/data 与 /a/data-evil）下误判。
+ *   - rel === ''        → resolved === dir（目录本身）
+ *   - rel 不以 '..' 开头且非绝对路径 → resolved 在 dir 内
+ *   - 其他 → 越界，拒绝
+ */
+function isPathInside(resolved: string, dir: string): boolean {
+  const rel = path.relative(dir, resolved);
+  if (rel === '') return true;
+  return !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
 export function resolveDirPath(key: string): string {
@@ -64,7 +78,7 @@ export function resolveDirPath(key: string): string {
     if (!projectId) throw new Error('Invalid projectId: empty');
     if (projectId.includes('..')) throw new Error('Invalid projectId');
     const resolved = path.join(getProjectsDir(), projectId);
-    if (!resolved.startsWith(getProjectsDir())) throw new Error('Path traversal detected');
+    if (!isPathInside(resolved, getProjectsDir())) throw new Error('Path traversal detected');
     return resolved;
   }
   return getDataDir();

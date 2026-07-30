@@ -12,7 +12,7 @@
       - script-src 'self' 'unsafe-inline'：dev 模式 Vite HMR 需要 unsafe-inline，
         生产构建后主进程 CSP 会移除 'unsafe-inline'
       - style-src 'self' 'unsafe-inline'：Tailwind 内联样式 + 动态主题切换需要
-      - img-src 'self' data: blob: https:：图片可来自 data URL（附件预览）+ https（远程图片）
+      - img-src 'self' data: blob:：图片可来自 data URL（附件预览）+ blob（本地对象 URL）
       - font-src 'self' data:：字体文件可内联
       - connect-src 'self' https://api.openai.com https://api.deepseek.com http://localhost:* http://127.0.0.1:*：
         限制 XHR/fetch 只能访问同源 + AI 服务商白名单 + 本地模型 loopback
@@ -21,7 +21,7 @@
       - frame-ancestors 'none'：禁止被嵌入 iframe（防 clickjacking）
       - form-action 'self'：禁止表单提交到外部域名
     -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://api.openai.com https://api.deepseek.com http://localhost:* http://127.0.0.1:*; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://api.openai.com https://api.deepseek.com http://localhost:* http://127.0.0.1:*; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'" />
     <script type="module">
       if (import.meta.hot?.on) {
         import.meta.hot.on('vite:error', (error) => {

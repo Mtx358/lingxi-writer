@@ -1,26 +1,22 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Editor } from '@tiptap/react';
-import DOMPurify from 'dompurify';
 import { aiService, type StreamHandler } from '@/utils/aiService';
 import { useAppStore } from '@/store/useAppStore';
 import { toast } from '@/hooks/useToast';
 import { getErrorMessage } from '@/lib/errorUtils';
+import { sanitizeHtml } from '@/components/SafeHtml';
 import { AI_STREAM_THROTTLE_MS, AI_CONTEXT_CONTINUATION_CHARS } from '@/constants/config';
 import type { Chapter } from '@/types';
 
-// AI 生成内容统一消毒入口：允许富文本标签但移除 script/事件处理器等危险节点
-// 导出供 TiptapEditor 的 pendingEditorInsert 插入路径复用，确保所有 AI 内容走同一消毒逻辑
+// AI 生成内容统一消毒入口：复用 SafeHtml 的 sanitizeHtml，确保与 SafeHtml 使用同一套
+// 严格配置（ALLOWED_TAGS/ALLOWED_ATTR/ALLOWED_URI_REGEXP/FORCE_BODY/noopener hook）。
+// 之前 sanitizeAiHtml 使用独立的较松配置（缺 ALLOWED_URI_REGEXP/FORCE_BODY/noopener hook），
+// 虽依赖 DOMPurify 默认行为仍安全，但配置不统一；现在收敛到单一数据源。
 //
-// 安全说明：ALLOWED_ATTR 不含 'style'。DOMPurify 3.x 默认不剥离 style 中的
-// `expression(...)` 与 `url(javascript:...)`（IE-only 攻击向量，现代浏览器不执行），
-// 为防御纵深与最小权限原则，统一禁止 inline style：AI 生成内容只需语义标签
-// （p/h1-h6/strong/em/u/s/ul/ol/li/blockquote/pre/code/a），样式由编辑器主题统一控制。
-// 同时 ALLOWED_ATTR 也不含 'color'（<font color> 已废弃，同样无必要）。
-export const sanitizeAiHtml = (html: string): string =>
-  DOMPurify.sanitize(html, {
-    ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 's', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'a', 'span', 'div', 'hr'],
-    ALLOWED_ATTR: ['href', 'target', 'rel', 'class'],
-  });
+// 安全说明：ALLOWED_ATTR 不含 'style'。为防御纵深与最小权限原则，统一禁止 inline style：
+// AI 生成内容只需语义标签（p/h1-h6/strong/em/u/s/ul/ol/li/blockquote/pre/code/a），
+// 样式由编辑器主题统一控制。同时 ALLOWED_ATTR 也不含 'color'（<font color> 已废弃）。
+export const sanitizeAiHtml = sanitizeHtml;
 
 interface UseEditorAIOptions {
   editor: Editor | null;

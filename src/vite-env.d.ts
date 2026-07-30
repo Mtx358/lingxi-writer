@@ -28,6 +28,9 @@ interface ElectronProjectFileAPI {
 interface ElectronStorageAPI {
   read: (key: string) => Promise<unknown>;
   write: (key: string, value: unknown) => Promise<boolean>;
+  // 批量写入：一次 IPC 写入多个 key，把 8 次 storage:write 合并成 1 次，
+  // 避免触发令牌桶限流。返回 Record<key, boolean> 标识每个 key 的结果
+  writeBatch: (entries: Record<string, unknown>) => Promise<Record<string, boolean>>;
   remove: (key: string) => Promise<boolean>;
   listProjectDirs: () => Promise<string[]>;
   backupProject: (projectId: string, keepCount?: number) => Promise<boolean>;

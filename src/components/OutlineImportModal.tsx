@@ -10,7 +10,7 @@
  *
  * 解析后预览识别结果，确认导入则填充到软件对应位置。
  */
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { X, ClipboardPaste, Sparkles, BookOpen, Users, Settings as SettingsIcon, GitBranch, Check, ChevronRight, Loader2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/store/useAppStore';
@@ -236,7 +236,8 @@ export default function OutlineImportModal({ onClose }: OutlineImportModalProps)
     }
   };
 
-  const totalParts = parsed?.volumes.reduce((s, v) => s + v.parts.length, 0) ?? 0;
+  // useMemo 收敛卷册 parts 累加，避免每次 render 重算 reduce
+  const totalParts = useMemo(() => parsed?.volumes.reduce((s, v) => s + v.parts.length, 0) ?? 0, [parsed?.volumes]);
 
   return (
     <div

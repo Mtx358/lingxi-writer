@@ -28,6 +28,25 @@ import type {
   CharacterArcAnalysis,
   ChapterBeat,
   CoreDriver,
+  ConflictLayerType,
+  PacingPressureReport,
+  PacingPressurePoint,
+  ForeshadowBoardItem,
+  VersionDiffReport,
+  VersionDiffEntry,
+  CharacterArcIssue,
+  RelationshipTemperatureCurve,
+  ReaderEmpathyReport,
+  SandboxTrialReport,
+  SandboxTrialSnapshot,
+  SandboxTrialIssueDigest,
+  SandboxTrialMetricDelta,
+  ForeshadowPayoffCheck,
+  EmergencyRecoveryPlan,
+  CharacterArcCurve,
+  CharacterArcRemedyPlan,
+  CharacterEmotionConsistencyReport,
+  PacingAdjustmentAdvice,
 } from '@/types';
 import { generateId, markDirty } from '@/utils/storage';
 import { toast } from '@/hooks/useToast';
@@ -40,6 +59,15 @@ import {
   generateStructureVariants,
   generateConflictCompass,
   previewCausalImpact,
+  runPacingPressureTest,
+  analyzeCharacterArcIssues,
+  analyzeRelationshipTemperature,
+  analyzeReaderEmpathy,
+  checkForeshadowPayoffReasonability,
+  generateEmergencyRecoveryPlan,
+  analyzeCharacterArcCurves,
+  analyzeCharacterEmotionConsistency,
+  generatePacingAdjustmentAdvice,
 } from '@/utils/aiService';
 import { registerProjectCleanup } from '../projectCleanup';
 
@@ -90,9 +118,19 @@ type OutlinePolishSlice = Pick<AppState,
   | 'saveOutlineSnapshot' | 'deleteOutlineSnapshot' | 'restoreOutlineSnapshot'
   | 'fetchOutlineExpansion' | 'clearOutlineExpansionCache' | 'getOutlineReport'
   | 'coreDriver' | 'conflictCompass' | 'structureVariants' | 'lastCausalImpact'
-  | 'lockCoreDriver' | 'unlockCoreDriver' | 'fetchConflictCompass' | 'fetchStructureVariants'
+  | 'lockCoreDriver' | 'unlockCoreDriver' | 'fetchConflictCompass' | 'updateConflictWeight' | 'fetchStructureVariants'
   | 'generateBeatsForChapter' | 'updateChapterBeat' | 'toggleBeatLock'
-  | 'runCausalPreview' | 'clearCausalImpact'>;
+  | 'runCausalPreview' | 'clearCausalImpact'
+  | 'lastPacingReport' | 'lastArcIssues' | 'lastRelationshipCurve'
+  | 'runPacingPressureTest' | 'updatePacingPoint' | 'resetPacingPoint' | 'getForeshadowBoardItems' | 'compareSnapshots'
+  | 'runCharacterArcCheck' | 'analyzeRelationship'
+  | 'lastReaderEmpathyReport' | 'runReaderEmpathyCheck'
+  | 'lastArcCurves' | 'lastArcRemedyPlans' | 'lastCharacterEmotionReport' | 'lastPacingAdvice'
+  | 'runCharacterEmotionConsistencyCheck' | 'requestPacingAdvice' | 'applyPacingAdvice' | 'clearPacingAdvice'
+  | 'sandboxBaseline' | 'sandboxBaselineChapters' | 'sandboxBaselineForeshadows' | 'lastSandboxReport'
+  | 'captureSandboxBaseline' | 'clearSandboxBaseline' | 'restoreSandboxBaseline' | 'runSandboxVerification'
+  | 'foreshadowPayoffChecks' | 'emergencyRecoveryPlans'
+  | 'runForeshadowPayoffCheck' | 'generateRecoveryPlan' | 'clearForeshadowChecks'>;
 
 // 单项目快照数量上限：超过时淘汰最旧快照，避免长期累积占用内存
 const MAX_OUTLINE_SNAPSHOTS = 30;
@@ -201,6 +239,30 @@ const enrichIssues = (issues: OutlineIssue[], chapters: Chapter[]): OutlineIssue
     return ch ? { ...issue, chapterTitle: ch.title } : issue;
   });
 
+/** 冲突层级中文标签 */
+const LAYER_LABELS: Record<ConflictLayerType, string> = {
+  inner: '内心冲突',
+  interpersonal: '人际冲突',
+  faction: '阵营冲突',
+  social: '社会冲突',
+};
+
+/**
+ * 冲突加重时启发式生成情节种子（文档：加重某层冲突，自动生成对应情节种子）。
+ * 基于层级类型与现有描述，给出一个可落地的情节方向。
+ */
+function generateConflictSeed(layer: ConflictLayerType, description: string, weight: number): string {
+  const intensity = weight >= 75 ? '激化到顶点' : weight >= 50 ? '显著加码' : '逐步升温';
+  const base = description || '核心矛盾';
+  const templates: Record<ConflictLayerType, string> = {
+    inner: `【${intensity}】${base}：安排一场独处场景，让主角在抉择前内心撕裂，旧伤复发逼迫其直面真实渴望`,
+    interpersonal: `【${intensity}】${base}：设计一次正面交锋，双方撕破伪装，关系从暧昧转向对立，留出翻盘余地`,
+    faction: `【${intensity}】${base}：引入第三方势力打破平衡，迫使两方在利益与立场间重新站队`,
+    social: `【${intensity}】${base}：放大环境压力（舆论/制度/灾难），让社会层面的阻力具体落到主角身上`,
+  };
+  return templates[layer];
+}
+
 export const createOutlinePolishSlice: StateCreator<AppState, [], [], OutlinePolishSlice> = (set, get) => ({
   lastOutlineReport: null,
   outlineSnapshots: [],
@@ -210,6 +272,22 @@ export const createOutlinePolishSlice: StateCreator<AppState, [], [], OutlinePol
   conflictCompass: [],
   structureVariants: [],
   lastCausalImpact: null,
+  lastPacingReport: null as PacingPressureReport | null,
+  lastArcIssues: [] as CharacterArcIssue[],
+  lastRelationshipCurve: null as RelationshipTemperatureCurve | null,
+  lastReaderEmpathyReport: null as ReaderEmpathyReport | null,
+  // 人物弧光三维追踪 / 角色维度情感一致性 / 节奏调校 AI 建议（规格书阶段4-2/4-3/4-5）
+  lastArcCurves: [] as CharacterArcCurve[],
+  lastArcRemedyPlans: [] as CharacterArcRemedyPlan[],
+  lastCharacterEmotionReport: null as CharacterEmotionConsistencyReport | null,
+  lastPacingAdvice: null as PacingAdjustmentAdvice | null,
+  sandboxBaseline: null as SandboxTrialSnapshot | null,
+  sandboxBaselineChapters: null as Chapter[] | null,
+  sandboxBaselineForeshadows: null as Foreshadow[] | null,
+  lastSandboxReport: null as SandboxTrialReport | null,
+  // 伏笔回收合理性检测 + 逾期应急回收方案（规格书阶段4-4）
+  foreshadowPayoffChecks: [] as ForeshadowPayoffCheck[],
+  emergencyRecoveryPlans: [] as EmergencyRecoveryPlan[],
 
   runOutlinePolish: async (scope: 'all' | string = 'all') => {
     const { chapters, characters, foreshadows, currentProjectId } = get();
@@ -414,10 +492,16 @@ export const createOutlinePolishSlice: StateCreator<AppState, [], [], OutlinePol
     const chapter = chapters.find(c => c.id === chapterId);
     if (!chapter) return [];
 
+    // 后续章节（order 更大的同级章节），用于生成连锁影响
+    const subsequentChapters = chapters
+      .filter(c => c.parentId === chapter.parentId && c.order > chapter.order)
+      .sort((a, b) => a.order - b.order)
+      .slice(0, 5);
+
     // 项目切换守卫：用户切项目后，旧项目的扩展方案不应写入新项目的 cache
     const req = beginRequest(`outlineExpansion:${chapterId}`);
     try {
-      const options = await expandOutlineNode(chapter, characters);
+      const options = await expandOutlineNode(chapter, characters, subsequentChapters);
       // 期间若有新请求进入或项目已切换，丢弃本次结果
       if (req.isStale()) return [];
       if (get().currentProjectId !== currentProjectId) return [];
@@ -479,6 +563,37 @@ export const createOutlinePolishSlice: StateCreator<AppState, [], [], OutlinePol
       console.warn('fetchConflictCompass failed:', e);
       toast.error('冲突罗盘生成失败', e instanceof Error ? e.message : 'AI 服务异常');
     }
+  },
+
+  /**
+   * 拖拽调整某层冲突权重（0-100）。
+   * 加重该层冲突时（weight 提升 ≥15），自动生成对应情节种子追加到该层 seeds，
+   * 让创作者拖完即拿到可落地的情节方向（文档：加重某层冲突，自动生成对应情节种子）。
+   */
+  updateConflictWeight: (layer, weight) => {
+    const clamped = Math.max(0, Math.min(100, Math.round(weight)));
+    const { conflictCompass } = get();
+    const target = conflictCompass.find(l => l.layer === layer);
+    if (!target) return;
+    const prevWeight = target.weight ?? 50;
+    const updated = conflictCompass.map(l =>
+      l.layer === layer ? { ...l, weight: clamped } : l,
+    );
+    // 加重 ≥15：自动生成对应情节种子追加（启发式，基于层级类型与描述）
+    const increased = clamped - prevWeight;
+    if (increased >= 15) {
+      const newSeed = generateConflictSeed(layer, target.description, clamped);
+      const targetUpdated = updated.find(l => l.layer === layer);
+      if (targetUpdated && !targetUpdated.seeds.includes(newSeed)) {
+        updated[updated.indexOf(targetUpdated)] = {
+          ...targetUpdated,
+          seeds: [...targetUpdated.seeds, newSeed],
+        };
+      }
+      toast.info('冲突加重，已生成情节种子', `${LAYER_LABELS[layer]}：${newSeed}`);
+    }
+    set({ conflictCompass: updated });
+    markDirty();
   },
 
   fetchStructureVariants: async () => {
@@ -563,6 +678,463 @@ export const createOutlinePolishSlice: StateCreator<AppState, [], [], OutlinePol
   },
 
   clearCausalImpact: () => set({ lastCausalImpact: null }),
+
+  // ===== 规格书第四、五阶段扩展域 actions（节奏压力 / 草蛇灰线看板 / 版本对比 / 人物弧光 / 关系温度）=====
+
+  runPacingPressureTest: async (scope: 'all' | string = 'all') => {
+    const { chapters, currentProjectId } = get();
+    if (!currentProjectId) return;
+    // 局部测试：仅测试选中章节（及子章节），与 runOutlinePolish 的 scope 语义一致
+    const scopedChapters = scope === 'all'
+      ? chapters
+      : chapters.filter(c => c.id === scope || isDescendant(chapters, c.id, scope));
+    const req = beginRequest('pacingPressure');
+    try {
+      const report = await runPacingPressureTest(scopedChapters);
+      // 期间若有新请求进入或项目已切换，丢弃本次结果
+      if (req.isStale()) return;
+      if (get().currentProjectId !== currentProjectId) return;
+      set({ lastPacingReport: report });
+    } catch (e) {
+      console.warn('runPacingPressureTest failed:', e);
+      toast.error('节奏压力测试失败', e instanceof Error ? e.message : 'AI 服务异常');
+    }
+  },
+
+  /**
+   * 手动调校某章的节奏能量值（规格书第四阶段：可交互节奏调校）。
+   * 创作者根据对故事的判断微调 external/emotional/isBuffer，曲线实时更新，
+   * 但不触发 AI 重新检测（避免覆盖人工判断）。total 由 external+emotional 自动重算。
+   */
+  updatePacingPoint: (chapterId: string, updates: Partial<Pick<PacingPressurePoint, 'external' | 'emotional' | 'isBuffer'>>) => {
+    const report = get().lastPacingReport;
+    if (!report) return;
+    const nextPoints = report.points.map(p => {
+      if (p.chapterId !== chapterId) return p;
+      const external = updates.external !== undefined ? Math.min(100, Math.max(0, Math.round(updates.external))) : p.external;
+      const emotional = updates.emotional !== undefined ? Math.min(100, Math.max(0, Math.round(updates.emotional))) : p.emotional;
+      const isBuffer = updates.isBuffer !== undefined ? updates.isBuffer : p.isBuffer;
+      return { ...p, external, emotional, isBuffer, total: external + emotional };
+    });
+    set({ lastPacingReport: { ...report, points: nextPoints } });
+  },
+
+  /** 重置某章节奏值为 AI 检测的原始值（需保存原始快照，此处简化为清空整个报告让用户重测） */
+  resetPacingPoint: (chapterId: string) => {
+    const report = get().lastPacingReport;
+    if (!report) return;
+    // 标记该章为"待重测"——实际重置需用户重新运行检测；此处仅清空该点数值归 0
+    const nextPoints = report.points.map(p =>
+      p.chapterId === chapterId ? { ...p, external: 0, emotional: 0, isBuffer: false, total: 0 } : p,
+    );
+    set({ lastPacingReport: { ...report, points: nextPoints } });
+  },
+
+  getForeshadowBoardItems: (): ForeshadowBoardItem[] => {
+    const { foreshadows, chapters } = get();
+    // 当前进度参考：取 order 最大的章节作为"当前章节"，用于判定逾期
+    const currentOrder = chapters.length > 0
+      ? Math.max(...chapters.map(c => c.order))
+      : 0;
+    const chapterById = new Map(chapters.map(c => [c.id, c]));
+
+    return foreshadows.map(f => {
+      const plantedChapter = f.plantedChapterId ? chapterById.get(f.plantedChapterId) : undefined;
+      const payoffChapter = f.payoffChapterId ? chapterById.get(f.payoffChapterId) : undefined;
+
+      let group: ForeshadowBoardItem['group'] = 'pending';
+      let overdueChapters = 0;
+      if (f.status === 'paid-off') {
+        group = 'paidoff';
+      } else if (f.status === 'progressing') {
+        // 推进中：用户显式标记正在回收推进
+        group = 'progressing';
+      } else if (payoffChapter && currentOrder > payoffChapter.order) {
+        // 已越过预设回收章节但尚未标记回收 → 逾期
+        group = 'overdue';
+        overdueChapters = currentOrder - payoffChapter.order;
+      }
+
+      return {
+        foreshadowId: f.id,
+        title: f.title,
+        group,
+        plantedChapterTitle: plantedChapter?.title,
+        payoffChapterTitle: payoffChapter?.title,
+        overdueChapters,
+        priority: f.priority,
+        // 关联角色返回 ID 列表，UI 层自行映射为名字
+        relatedCharacters: f.relatedCharacters,
+      };
+    });
+  },
+
+  compareSnapshots: (oldSnapshotId: string, newSnapshotId: string): VersionDiffReport | null => {
+    const { outlineSnapshots } = get();
+    const oldSnap = outlineSnapshots.find(s => s.id === oldSnapshotId);
+    const newSnap = outlineSnapshots.find(s => s.id === newSnapshotId);
+    if (!oldSnap || !newSnap) return null;
+
+    const oldMap = new Map(oldSnap.chapters.map(c => [c.id, c]));
+    const newMap = new Map(newSnap.chapters.map(c => [c.id, c]));
+    const diffs: VersionDiffEntry[] = [];
+
+    // added: 新快照有但旧快照没有
+    for (const newCh of newSnap.chapters) {
+      if (!oldMap.has(newCh.id)) {
+        diffs.push({
+          field: `章节[${newCh.title}]`,
+          oldValue: '',
+          newValue: '新增章节',
+          changeType: 'added',
+        });
+      }
+    }
+
+    // removed: 旧快照有但新快照没有
+    for (const oldCh of oldSnap.chapters) {
+      if (!newMap.has(oldCh.id)) {
+        diffs.push({
+          field: `章节[${oldCh.title}]`,
+          oldValue: '删除章节',
+          newValue: '',
+          changeType: 'removed',
+        });
+      }
+    }
+
+    // modified: 都有但 title/summary/order/levelType 变化
+    for (const newCh of newSnap.chapters) {
+      const oldCh = oldMap.get(newCh.id);
+      if (!oldCh) continue;
+      if (oldCh.title !== newCh.title) {
+        diffs.push({
+          field: `章节[${newCh.title}].title`,
+          oldValue: oldCh.title,
+          newValue: newCh.title,
+          changeType: 'modified',
+        });
+      }
+      if (oldCh.summary !== newCh.summary) {
+        diffs.push({
+          field: `章节[${newCh.title}].summary`,
+          oldValue: oldCh.summary,
+          newValue: newCh.summary,
+          changeType: 'modified',
+        });
+      }
+      if (oldCh.order !== newCh.order) {
+        diffs.push({
+          field: `章节[${newCh.title}].order`,
+          oldValue: String(oldCh.order),
+          newValue: String(newCh.order),
+          changeType: 'modified',
+        });
+      }
+      if (oldCh.levelType !== newCh.levelType) {
+        diffs.push({
+          field: `章节[${newCh.title}].levelType`,
+          oldValue: oldCh.levelType,
+          newValue: newCh.levelType,
+          changeType: 'modified',
+        });
+      }
+    }
+
+    return {
+      oldSnapshotId,
+      newSnapshotId,
+      diffs,
+      generatedAt: new Date().toISOString(),
+    };
+  },
+
+  runCharacterArcCheck: async () => {
+    const { chapters, characters, currentProjectId } = get();
+    if (!currentProjectId) return;
+    const req = beginRequest('characterArcCheck');
+    try {
+      const issues = await analyzeCharacterArcIssues(chapters, characters);
+      if (req.isStale()) return;
+      if (get().currentProjectId !== currentProjectId) return;
+      set({ lastArcIssues: issues });
+
+      // 扩展：在现有 analyzeCharacterArcIssues 调用后，再调用 analyzeCharacterArcCurves，
+      // 结果写入 lastArcCurves（try/catch 包裹，失败不阻断 issues）
+      try {
+        const curves = await analyzeCharacterArcCurves({ chapters, characters });
+        if (req.isStale()) return;
+        if (get().currentProjectId !== currentProjectId) return;
+        set({ lastArcCurves: curves });
+      } catch (e2) {
+        console.warn('analyzeCharacterArcCurves failed (non-blocking):', e2);
+      }
+    } catch (e) {
+      console.warn('runCharacterArcCheck failed:', e);
+      toast.error('人物弧光校验失败', e instanceof Error ? e.message : 'AI 服务异常');
+    }
+  },
+
+  /**
+   * 执行角色维度情感一致性校验（规格书阶段4-5）。
+   * 检测相邻章节同一角色的情绪跳转幅度（>50 为突兀），
+   * 结果写入 lastCharacterEmotionReport（含 issues + curves）。
+   */
+  runCharacterEmotionConsistencyCheck: async () => {
+    const { chapters, characters, currentProjectId } = get();
+    if (!currentProjectId) return;
+    const req = beginRequest('characterEmotionConsistency');
+    try {
+      const report = await analyzeCharacterEmotionConsistency({ chapters, characters });
+      if (req.isStale()) return;
+      if (get().currentProjectId !== currentProjectId) return;
+      set({ lastCharacterEmotionReport: report });
+      if (report.issues.length > 0) {
+        toast.warning('角色情感一致性校验完成', `检测到 ${report.issues.length} 处情绪跳转突兀`);
+      } else {
+        toast.success('角色情感一致性校验完成', '未检测到相邻章节情绪跳转突兀');
+      }
+    } catch (e) {
+      console.warn('runCharacterEmotionConsistencyCheck failed:', e);
+      toast.error('角色情感一致性校验失败', e instanceof Error ? e.message : 'AI 服务异常');
+    }
+  },
+
+  /**
+   * 请求节奏调校 AI 建议（规格书阶段4-2）。
+   * 根据 chapterId 找到章节，调用 generatePacingAdjustmentAdvice，
+   * 结果写入 lastPacingAdvice，供 UI 在弹层中展示。
+   */
+  requestPacingAdvice: async (chapterId, dimension, direction, delta) => {
+    const { chapters, currentProjectId } = get();
+    if (!currentProjectId) return;
+    const chapter = chapters.find(c => c.id === chapterId);
+    if (!chapter) {
+      toast.warning('未找到章节', '无法生成节奏调校建议');
+      return;
+    }
+    const req = beginRequest(`pacingAdvice:${chapterId}`);
+    try {
+      const advice = await generatePacingAdjustmentAdvice({ chapter, dimension, direction, delta });
+      if (req.isStale()) return;
+      if (get().currentProjectId !== currentProjectId) return;
+      set({ lastPacingAdvice: advice });
+    } catch (e) {
+      console.warn('requestPacingAdvice failed:', e);
+      toast.error('节奏调校建议生成失败', e instanceof Error ? e.message : 'AI 服务异常');
+    }
+  },
+
+  /**
+   * 应用节奏调校建议（规格书阶段4-2）。
+   * 清空 lastPacingAdvice + 调用 recordPolishAction('pacing') 记录打磨动作。
+   * 用 get() 跨域调用 recordPolishAction（参考现有 recordPolishAction 用法）。
+   */
+  applyPacingAdvice: () => {
+    set({ lastPacingAdvice: null });
+    try {
+      get().recordPolishAction('pacing');
+    } catch (e) {
+      console.warn('applyPacingAdvice recordPolishAction failed:', e);
+    }
+  },
+
+  /** 清空节奏调校建议 */
+  clearPacingAdvice: () => set({ lastPacingAdvice: null }),
+
+  analyzeRelationship: async (characterAId: string, characterBId: string) => {
+    const { chapters, characters, currentProjectId } = get();
+    if (!currentProjectId) return;
+    const charA = characters.find(c => c.id === characterAId);
+    const charB = characters.find(c => c.id === characterBId);
+    if (!charA || !charB) return;
+    // key 含两个角色 ID，避免不同角色对的请求互相挤掉
+    const req = beginRequest(`relationship:${characterAId}:${characterBId}`);
+    try {
+      const curve = await analyzeRelationshipTemperature(chapters, charA, charB);
+      if (req.isStale()) return;
+      if (get().currentProjectId !== currentProjectId) return;
+      set({ lastRelationshipCurve: curve });
+    } catch (e) {
+      console.warn('analyzeRelationship failed:', e);
+      toast.error('关系温度分析失败', e instanceof Error ? e.message : 'AI 服务异常');
+    }
+  },
+
+  runReaderEmpathyCheck: async (scope: 'all' | string = 'all') => {
+    const { chapters, characters, foreshadows, currentProjectId } = get();
+    if (!currentProjectId) return;
+    // 局部校验：仅校验选中章节（及子章节），与 runOutlinePolish 的 scope 语义一致
+    const scopedChapters = scope === 'all'
+      ? chapters
+      : chapters.filter(c => c.id === scope || isDescendant(chapters, c.id, scope));
+    const req = beginRequest('readerEmpathy');
+    try {
+      // 扩展：传入 foreshadows，启用 suspense-forget 等四项读者留存视角检测
+      const report = await analyzeReaderEmpathy(scopedChapters, characters, foreshadows);
+      if (req.isStale()) return;
+      if (get().currentProjectId !== currentProjectId) return;
+      set({ lastReaderEmpathyReport: { ...report, scope } });
+    } catch (e) {
+      console.warn('runReaderEmpathyCheck failed:', e);
+      toast.error('读者共情校验失败', e instanceof Error ? e.message : 'AI 服务异常');
+    }
+  },
+
+  /**
+   * 捕获当前诊断报告为沙盒试运行基线（修改前快照 + 大纲副本）。
+   * 同时深拷贝 chapters/foreshadows，用于不满意时回退到修改前状态。
+   * 创作者在"发现问题"后点击此按钮锁定基线，随后就地修改大纲，
+   * 修改完成后再调 runSandboxVerification 对比前后状态，验证闭环。
+   * 不满意可调 restoreSandboxBaseline 回退。
+   */
+  captureSandboxBaseline: () => {
+    const report = get().lastOutlineReport;
+    if (!report) {
+      toast.warning('请先运行一次诊断', '还没有诊断报告可作为基线');
+      return;
+    }
+    const { chapters, foreshadows } = get();
+    set({
+      sandboxBaseline: buildTrialSnapshot(report),
+      sandboxBaselineChapters: chapters.map(c => ({ ...c })),
+      sandboxBaselineForeshadows: foreshadows.map(f => ({ ...f })),
+      lastSandboxReport: null,
+    });
+    toast.success('已捕获试运行基线', '大纲副本已保存，修改后可一键回退到此刻状态');
+  },
+
+  clearSandboxBaseline: () => {
+    set({
+      sandboxBaseline: null,
+      sandboxBaselineChapters: null,
+      sandboxBaselineForeshadows: null,
+      lastSandboxReport: null,
+    });
+  },
+
+  /**
+   * 回退到沙盒基线：用基线副本覆盖当前 chapters/foreshadows。
+   * 用于试运行后对修改不满意，想撤销所有改动回到基线状态。
+   * 同时记录到全局撤销栈，支持 Ctrl+Z 撤销此次回退。
+   */
+  restoreSandboxBaseline: () => {
+    const { sandboxBaselineChapters, sandboxBaselineForeshadows } = get();
+    if (!sandboxBaselineChapters && !sandboxBaselineForeshadows) {
+      toast.warning('没有可回退的基线', '请先点击"开始试运行"捕获基线');
+      return;
+    }
+    const prevChapters = get().chapters;
+    const prevForeshadows = get().foreshadows;
+    set({
+      chapters: sandboxBaselineChapters ?? prevChapters,
+      foreshadows: sandboxBaselineForeshadows ?? prevForeshadows,
+    });
+    markDirty();
+    get().recomputeForeshadowMentions();
+    // 记录到全局撤销栈：可撤销此次回退
+    get().pushUndo({
+      kind: 'chapter-update',
+      description: '回退到沙盒试运行基线',
+      undo: () => {
+        set({ chapters: prevChapters, foreshadows: prevForeshadows });
+        markDirty();
+        get().recomputeForeshadowMentions();
+      },
+    });
+    toast.success('已回退到试运行基线', '当前大纲已恢复为修改前状态（可 Ctrl+Z 撤销此次回退）');
+  },
+
+  /**
+   * 运行沙盒验证：重新诊断并对基线做前后对比。
+   * 流程：重新跑 runOutlinePolish 获取"后"报告 → 与基线 diff → 产出对比报告。
+   * 复用 outlinePolish 的并发守卫，避免与正在进行的诊断冲突。
+   */
+  runSandboxVerification: async (scope: 'all' | string = 'all') => {
+    const { currentProjectId, sandboxBaseline } = get();
+    if (!currentProjectId) return;
+    if (!sandboxBaseline) {
+      toast.warning('请先捕获试运行基线', '点击"开始试运行"锁定修改前状态');
+      return;
+    }
+    const req = beginRequest('sandboxVerify');
+    try {
+      // 复用 runOutlinePolish 获取最新诊断报告
+      await get().runOutlinePolish(scope);
+      if (req.isStale()) return;
+      if (get().currentProjectId !== currentProjectId) return;
+      const afterReport = get().lastOutlineReport;
+      if (!afterReport) return;
+      const after = buildTrialSnapshot(afterReport);
+      const report = diffTrialSnapshots(sandboxBaseline, after);
+      if (req.isStale()) return;
+      set({ lastSandboxReport: report });
+      if (report.verdict === 'improved') {
+        toast.success('验证闭环完成', `解决 ${report.resolvedIssues.length} 个问题，新增 ${report.newIssues.length} 个`);
+      } else if (report.verdict === 'regressed') {
+        toast.warning('验证闭环完成', `新增 ${report.newIssues.length} 个问题，仅解决 ${report.resolvedIssues.length} 个，需复核`);
+      } else {
+        toast.info('验证闭环完成', `问题数量无净变化（解决 ${report.resolvedIssues.length}·新增 ${report.newIssues.length}）`);
+      }
+    } catch (e) {
+      console.warn('runSandboxVerification failed:', e);
+      toast.error('沙盒验证失败', e instanceof Error ? e.message : 'AI 服务异常');
+    }
+  },
+
+  /**
+   * 运行伏笔回收合理性检测（规格书阶段4-4）。
+   * 仅检测已标记 paid-off 且有回收章节的伏笔，判断回收章节是否真正呼应埋设内容。
+   * 结果写入 foreshadowPayoffChecks，UI 据此在已回收栏标注 good/weak/missing。
+   */
+  runForeshadowPayoffCheck: async () => {
+    const { foreshadows, chapters, currentProjectId } = get();
+    if (!currentProjectId) return;
+    const paidOff = foreshadows.filter(f => f.status === 'paid-off' && f.payoffChapterId);
+    if (paidOff.length === 0) {
+      set({ foreshadowPayoffChecks: [] });
+      toast.info('无需检测', '当前没有已回收伏笔');
+      return;
+    }
+    try {
+      const results = await checkForeshadowPayoffReasonability({ foreshadows, chapters });
+      set({ foreshadowPayoffChecks: results });
+      const weak = results.filter(r => r.level === 'weak').length;
+      const missing = results.filter(r => r.level === 'missing').length;
+      if (weak + missing === 0) {
+        toast.success('回收合理性检测完成', `${results.length} 条已回收伏笔全部充分呼应`);
+      } else {
+        toast.warning('回收合理性检测完成', `${results.length} 条已回收：${missing} 条未呼应、${weak} 条呼应较弱`);
+      }
+    } catch (e) {
+      console.warn('runForeshadowPayoffCheck failed:', e);
+      toast.error('回收合理性检测失败', e instanceof Error ? e.message : 'AI 服务异常');
+    }
+  },
+
+  /**
+   * 为指定逾期伏笔生成应急回收方案（规格书阶段4-4）。
+   * 产出 3 个按成本递增的变体方向，结果写入 emergencyRecoveryPlans。
+   */
+  generateRecoveryPlan: async (foreshadowId: string) => {
+    const { foreshadows, chapters, characters, currentProjectId } = get();
+    if (!currentProjectId) return;
+    const foreshadow = foreshadows.find(f => f.id === foreshadowId);
+    if (!foreshadow) return;
+    try {
+      const plan = await generateEmergencyRecoveryPlan({ foreshadow, chapters, characters });
+      // 替换同 ID 的旧方案，保留其余
+      const rest = get().emergencyRecoveryPlans.filter(p => p.foreshadowId !== foreshadowId);
+      set({ emergencyRecoveryPlans: [...rest, plan] });
+    } catch (e) {
+      console.warn('generateRecoveryPlan failed:', e);
+      toast.error('应急方案生成失败', e instanceof Error ? e.message : 'AI 服务异常');
+    }
+  },
+
+  clearForeshadowChecks: () => {
+    set({ foreshadowPayoffChecks: [], emergencyRecoveryPlans: [] });
+  },
 });
 
 /** 判断 targetId 是否为 ancestorId 的后代（含跨多级） */
@@ -576,4 +1148,181 @@ function isDescendant(chapters: Chapter[], targetId: string, ancestorId: string)
     parentId = chapters.find(c => c.id === parentId)?.parentId ?? null;
   }
   return false;
+}
+
+/**
+ * 从诊断报告构建沙盒试运行快照（含多维指标：节奏/弧光/伏笔/逻辑/钩子）。
+ * 用于前后对比，避免持有完整报告引用。
+ */
+function buildTrialSnapshot(report: OutlinePolishReport): SandboxTrialSnapshot {
+  const activeIssues = report.issues.filter(i => !i.ignored && !i.resolved);
+  const errorCount = activeIssues.filter(i => i.severity === 'error').length;
+  const warningCount = activeIssues.filter(i => i.severity === 'warning' || i.severity === 'info').length;
+
+  // 节奏曲线统计：均值与方差
+  const tensions = report.pacingCurve.map(p => p.tension).filter(t => typeof t === 'number');
+  const pacingMean = tensions.length > 0 ? tensions.reduce((a, b) => a + b, 0) / tensions.length : 0;
+  const pacingVariance = tensions.length > 0
+    ? tensions.reduce((sum, t) => sum + Math.pow(t - pacingMean, 2), 0) / tensions.length
+    : 0;
+
+  // 人物弧光高风险数
+  const characterArcRiskCount = report.characterArcs.filter(a => a.risk === 'high').length;
+
+  // 伏笔状态统计 + 回收率
+  const foreshadowPlanted = report.foreshadowDensity.reduce((s, c) => s + c.planted, 0);
+  const foreshadowProgressing = report.foreshadowDensity.reduce((s, c) => s + c.progressing, 0);
+  const foreshadowPaidOff = report.foreshadowDensity.reduce((s, c) => s + c.paidOff, 0);
+  // 逾期 = planted 且章节距离 > 阈值（这里用 planted - paidOff 近似未回收，简化为统计）
+  const foreshadowStats: [number, number, number, number] = [
+    foreshadowPlanted, foreshadowProgressing, foreshadowPaidOff, 0,
+  ];
+  const totalForeshadows = foreshadowPlanted + foreshadowProgressing + foreshadowPaidOff;
+  const foreshadowRecoveryRate = totalForeshadows > 0
+    ? Math.round((foreshadowPaidOff / totalForeshadows) * 100)
+    : 0;
+
+  // 逻辑维度问题数
+  const logicIssueCount = activeIssues.filter(i => i.dimension === 'logic').length;
+
+  // 章末钩子强度均值（用 pacingCurve 的 hookStrength 近似，回退到 tension/20）
+  const hookStrengths = report.pacingCurve.map(p => (p as { hookStrength?: number }).hookStrength);
+  const validHooks = hookStrengths.filter((h): h is number => typeof h === 'number');
+  const avgHookStrength = validHooks.length > 0
+    ? validHooks.reduce((a, b) => a + b, 0) / validHooks.length
+    : pacingMean / 20;
+
+  return {
+    capturedAt: new Date().toISOString(),
+    totalIssues: activeIssues.length,
+    errorCount,
+    warningCount,
+    threeActRatio: report.threeActRatio,
+    totalChapters: report.totalChapters,
+    totalWords: report.totalWords,
+    issueDigests: activeIssues.map(i => ({
+      id: i.id,
+      dimension: i.dimension,
+      severity: i.severity,
+      description: i.description,
+      chapterId: i.chapterId,
+      chapterTitle: i.chapterTitle,
+    })),
+    pacingMean: Math.round(pacingMean * 100) / 100,
+    pacingVariance: Math.round(pacingVariance * 100) / 100,
+    characterArcRiskCount,
+    foreshadowStats,
+    foreshadowRecoveryRate,
+    logicIssueCount,
+    avgHookStrength: Math.round(avgHookStrength * 10) / 10,
+  };
+}
+
+/**
+ * 问题对齐键：用 dimension + chapterId + description 做稳定匹配。
+ * issue 的 id 在两次诊断间可能不同（AI 重新生成），不能用 id 对齐。
+ */
+function issueKey(d: SandboxTrialIssueDigest): string {
+  return `${d.dimension}::${d.chapterId || ''}::${d.description}`;
+}
+
+/**
+ * 对比前后两份试运行快照，产出对比报告。
+ *
+ * 对齐策略：按 dimension + chapterId + description 匹配 issue。
+ *   - resolvedIssues：before 有 after 无
+ *   - newIssues：after 有 before 无
+ *   - remainingIssues：两边都有
+ *
+ * verdict 判定：
+ *   - improved：errorCount 下降，或新增问题数 < 已解决数
+ *   - regressed：errorCount 上升，或新增问题数 > 已解决数
+ *   - neutral：其余
+ */
+function diffTrialSnapshots(
+  before: SandboxTrialSnapshot,
+  after: SandboxTrialSnapshot,
+): SandboxTrialReport {
+  const beforeMap = new Map(before.issueDigests.map(d => [issueKey(d), d]));
+  const afterMap = new Map(after.issueDigests.map(d => [issueKey(d), d]));
+
+  const resolvedIssues: SandboxTrialIssueDigest[] = [];
+  const newIssues: SandboxTrialIssueDigest[] = [];
+  const remainingIssues: SandboxTrialIssueDigest[] = [];
+
+  for (const [key, d] of beforeMap) {
+    if (afterMap.has(key)) {
+      remainingIssues.push(d);
+    } else {
+      resolvedIssues.push(d);
+    }
+  }
+  for (const [key, d] of afterMap) {
+    if (!beforeMap.has(key)) {
+      newIssues.push(d);
+    }
+  }
+
+  // 指标变化（含文档要求的多维对比：节奏/弧光/伏笔/逻辑/钩子）
+  const metricDeltas: SandboxTrialMetricDelta[] = [
+    buildMetricDelta('问题总数', before.totalIssues, after.totalIssues, true),
+    buildMetricDelta('必修问题', before.errorCount, after.errorCount, true),
+    buildMetricDelta('建议问题', before.warningCount, after.warningCount, true),
+    // 节奏均方差：越低越均匀，下降为正向
+    buildMetricDelta('节奏均方差', before.pacingVariance, after.pacingVariance, true),
+    buildMetricDelta('节奏均值', before.pacingMean, after.pacingMean, false),
+    // 人物弧光高风险数：越少越好，下降为正向
+    buildMetricDelta('弧光高风险角色', before.characterArcRiskCount, after.characterArcRiskCount, true),
+    // 伏笔回收率：越高越好，上升为正向
+    buildMetricDelta('伏笔回收率(%)', before.foreshadowRecoveryRate, after.foreshadowRecoveryRate, false),
+    // 逻辑问题数：越少越好
+    buildMetricDelta('逻辑断裂点', before.logicIssueCount, after.logicIssueCount, true),
+    // 章末钩子强度：越高越好
+    buildMetricDelta('平均钩子强度', before.avgHookStrength, after.avgHookStrength, false),
+    buildMetricDelta('章节数', before.totalChapters, after.totalChapters, false),
+    buildMetricDelta('总字数', before.totalWords, after.totalWords, false),
+    {
+      label: '三幕比例',
+      before: before.threeActRatio.join(' / '),
+      after: after.threeActRatio.join(' / '),
+      direction: before.threeActRatio.join() === after.threeActRatio.join() ? 'same' : 'up',
+      positive: before.threeActRatio.join() === after.threeActRatio.join(),
+    },
+  ];
+
+  // verdict 判定
+  const errorDelta = after.errorCount - before.errorCount;
+  const netIssueDelta = newIssues.length - resolvedIssues.length;
+  let verdict: SandboxTrialReport['verdict'];
+  if (errorDelta < 0 || (errorDelta === 0 && netIssueDelta < 0)) {
+    verdict = 'improved';
+  } else if (errorDelta > 0 || (errorDelta === 0 && netIssueDelta > 0)) {
+    verdict = 'regressed';
+  } else {
+    verdict = 'neutral';
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    before,
+    after,
+    resolvedIssues,
+    newIssues,
+    remainingIssues,
+    metricDeltas,
+    verdict,
+  };
+}
+
+/** 构建单项指标变化。lowerIsBetter=true 表示数值降低为正向（如问题数）。 */
+function buildMetricDelta(
+  label: string,
+  beforeVal: number,
+  afterVal: number,
+  lowerIsBetter: boolean,
+): SandboxTrialMetricDelta {
+  const diff = afterVal - beforeVal;
+  const direction = diff > 0 ? 'up' : diff < 0 ? 'down' : 'same';
+  const positive = diff === 0 ? true : lowerIsBetter ? diff < 0 : diff > 0;
+  return { label, before: beforeVal, after: afterVal, direction, positive };
 }

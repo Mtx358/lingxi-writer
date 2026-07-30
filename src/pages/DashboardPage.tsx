@@ -20,6 +20,7 @@ import { useAppStore } from '@/store/useAppStore';
 import { CHAPTER_STATUS_LABELS, SUBPLOT_STATUS_LABELS, SUBPLOT_STATUS_COLORS } from '@/types';
 import type { SubplotStatus } from '@/types';
 import { READING_SPEED_WPM } from '@/constants/config';
+import { toast } from '@/hooks/useToast';
 import Empty from '@/components/Empty';
 import ProjectNotFound from '@/components/ProjectNotFound';
 
@@ -63,6 +64,11 @@ export default function DashboardPage() {
         await openProject(projectId);
         // await openProject 之后再次检查：覆盖 A 的 openProject 比 B 晚返回的场景
         if (cancelled) return;
+      } catch (e) {
+        if (!cancelled) {
+          console.error('DashboardPage 加载项目失败:', e);
+          toast.error('项目加载失败', '请返回首页重试，或检查项目文件是否可访问');
+        }
       } finally {
         if (!cancelled) setProjectLoading(false);
       }

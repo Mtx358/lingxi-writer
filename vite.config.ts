@@ -60,12 +60,13 @@ export default defineConfig({
     },
   },
   plugins: [
+    // react-dev-locator 仅在开发模式启用：它是 IDE 点击跳转源码的开发期工具，
+    // 生产构建启用会走 babel 转换链路（比纯 esbuild 慢 2-5 倍）并给每个组件
+    // 注入 dev locator 元数据增大 bundle 体积。
     react({
-      babel: {
-        plugins: [
-          'react-dev-locator',
-        ],
-      },
+      babel: process.env.NODE_ENV === 'development' ? {
+        plugins: ['react-dev-locator'],
+      } : undefined,
     }),
     tsconfigPaths()
   ],

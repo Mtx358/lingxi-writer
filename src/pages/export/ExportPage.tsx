@@ -119,6 +119,11 @@ export default function ExportPage() {
         if (cancelled) return;
         await openProject(projectId);
         if (cancelled) return;
+      } catch (e) {
+        if (!cancelled) {
+          console.error('ExportPage 加载项目失败:', e);
+          toast.error('项目加载失败', '请返回首页重试，或检查项目文件是否可访问');
+        }
       } finally {
         if (!cancelled) setProjectLoading(false);
       }

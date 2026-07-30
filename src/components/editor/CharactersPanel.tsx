@@ -436,8 +436,18 @@ function CharacterItem({
   return (
     <div style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 80px' }}>
       <div
+        role="button"
+        tabIndex={0}
+        aria-pressed={isSelected}
+        aria-label={`${isSelected ? '取消选中' : '选中'}角色：${char.name}`}
         onClick={() => onToggleSelect(char, isSelected)}
-        className={`group flex items-center gap-2 p-2 rounded cursor-pointer transition-colors ${
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onToggleSelect(char, isSelected);
+          }
+        }}
+        className={`group flex items-center gap-2 p-2 rounded cursor-pointer transition-colors focus:outline-none focus:ring-1 focus:ring-amber-400/50 ${
           isSelected ? 'bg-amber-400/10' : 'hover:bg-ink-800/50'
         }`}
       >

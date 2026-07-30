@@ -90,7 +90,13 @@ export function executeSearch(params: SearchParams): SearchResult[] {
     const profileMatches = (profileStr.match(safePattern) || []).length;
     const totalMatches = nameMatches * 5 + profileMatches;
     if (totalMatches > 0) {
-      const personality = (c.profile as Record<string, string>).personality || (c.profile as Record<string, string>).background || '';
+      // profile 声明为 Record<string, unknown>，不可直接 as Record<string, string>：
+      // 字段值可能是数字/对象/数组。按字段 typeof 守卫取字符串，避免类型谎言
+      const profileFieldStr = (key: string): string => {
+        const v = c.profile[key];
+        return typeof v === 'string' ? v : '';
+      };
+      const personality = profileFieldStr('personality') || profileFieldStr('background');
       results.push({ type: 'character', id: c.id, title: c.name, preview: personality, matchCount: totalMatches });
     }
   });

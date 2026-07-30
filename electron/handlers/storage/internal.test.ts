@@ -17,15 +17,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 
-const hoisted = vi.hoisted(() => ({
-  TEST_USERDATA: '/tmp/lingxi-test-internal',
-}));
+const hoisted = vi.hoisted(() => {
+  // vi.hoisted 回调在模块 import 初始化前执行，不能引用外层 import，需用 require
+  const _path = require('node:path');
+  const _os = require('node:os');
+  return {
+    TEST_USERDATA: _path.join(_os.tmpdir(), 'lingxi-test-internal'),
+    tmpdir: _os.tmpdir(),
+  };
+});
 
 vi.mock('electron', () => ({
   app: {
     getPath: vi.fn((name: string) => {
       if (name === 'userData') return hoisted.TEST_USERDATA;
-      return '/tmp';
+      return hoisted.tmpdir;
     }),
   },
 }));

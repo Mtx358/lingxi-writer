@@ -24,6 +24,32 @@ import '@testing-library/jest-dom/vitest';
 vi.mock('@/hooks/useConfirm', () => ({ confirm: vi.fn(), ConfirmDialog: () => null }));
 import { confirm } from '@/hooks/useConfirm';
 const confirmMock = vi.mocked(confirm);
+
+/**
+ * 预加载懒加载面板：OutlinePolishPanel 用 React.lazy 按需加载 17 个子面板以优化
+ * 首屏体积。测试环境下 lazy() 仍走动态 import，jsdom 中首次渲染会先 fallback 再解析，
+ * 导致 getByText 立即查询时找不到懒加载组件的内容。这里在导入主组件前先同步 import
+ * 所有子面板，让 Vite 的模块图在测试启动时即完整建立，lazy() 解析为同步组件。
+ */
+import './outlinePolish/SkeletonTab';
+import './outlinePolish/DiagnosticsPanel';
+import './outlinePolish/RhythmPulsePanel';
+import './outlinePolish/CharacterArcPanel';
+import './outlinePolish/ExpansionPanel';
+import './outlinePolish/BeatsTab';
+import './outlinePolish/ChapterGridPanel';
+import './outlinePolish/CausalTab';
+import './outlinePolish/VersionGardenPanel';
+import './outlinePolish/InspirationPanel';
+import './outlinePolish/CoreDriverLockPanel';
+import './outlinePolish/MultiLineCommandPanel';
+import './outlinePolish/PacingPressurePanel';
+import './outlinePolish/ForeshadowBoardPanel';
+import './outlinePolish/CharacterArcCheckPanel';
+import './outlinePolish/ReaderEmpathyCheckPanel';
+import './outlinePolish/SandboxTrialPanel';
+import './outlinePolish/VersionDiffPanel';
+
 import OutlinePolishPanel from '@/components/editor/OutlinePolishPanel';
 import { useAppStore } from '@/store/useAppStore';
 import type {
@@ -248,6 +274,50 @@ function mockStore(overrides: Partial<{
   return merged;
 }
 
+// ============ 导航辅助 ============
+// 重构后面板使用 5 阶段侧边栏 + 阶段内子 Tab 结构。
+// 旧测试直接 `fireEvent.click(screen.getByText('骨架'))` 的写法不再适用：
+// 需先点击左侧阶段按钮切到对应阶段（自动选中该阶段第一个 Tab），再点子 Tab。
+function navigateToTab(tabName: string) {
+  const tabToStage: Record<string, string> = {
+    '灵感池': '灵感打磨',
+    '核心驱动': '骨架打磨',
+    '骨架': '骨架打磨',
+    '概览': '章节打磨',
+    '节拍': '章节打磨',
+    '扩展': '章节打磨',
+    '多线': '章节打磨',
+    '诊断': '深度校验',
+    '节奏': '深度校验',
+    '弧光': '深度校验',
+    '伏笔看板': '深度校验',
+    '推演': '颠覆性修改',
+    '版本对比': '颠覆性修改',
+    '版本花园': '颠覆性修改',
+  };
+  const stageName = tabToStage[tabName];
+  if (!stageName) throw new Error(`Unknown tab: ${tabName}`);
+  // 点击左侧侧边栏的阶段按钮（切换后自动选中该阶段第一个 Tab）
+  fireEvent.click(screen.getByText(stageName));
+  // 单 Tab 阶段（灵感打磨）不渲染子 Tab 栏，无需再点子 Tab；
+  // 多 Tab 阶段需要再点击具体的子 Tab 按钮
+  if (!['灵感池'].includes(tabName)) {
+    fireEvent.click(screen.getByText(tabName));
+  }
+}
+
+/**
+ * 等待懒加载面板渲染完成。
+ * OutlinePolishPanel 的 17 个子面板用 React.lazy 按需加载，首次渲染会先显示
+ * Suspense fallback（"加载中…"）再在 microtask 后解析。测试中需要等待 fallback
+ * 消失后再查询面板内容。传入 render 后立即调用。
+ */
+async function flushLazy() {
+  await waitFor(() => {
+    expect(screen.queryByText('加载中…')).not.toBeInTheDocument();
+  }, { timeout: 1000 });
+}
+
 describe('OutlinePolishPanel', () => {
   let originalConsoleError: typeof console.error;
 
@@ -274,18 +344,21 @@ describe('OutlinePolishPanel', () => {
   });
 
   // ============ 顶部操作栏 ============
-  it('渲染标题"大纲打磨"+ 8 个 tab + 范围选择器', () => {
+  it('渲染标题"大纲打磨"+ 5 个阶段 + 范围选择器', async () => {
     mockStore();
     render(<OutlinePolishPanel />);
-    expect(screen.getByText('大纲打磨')).toBeInTheDocument();
-    expect(screen.getByText('骨架')).toBeInTheDocument();
-    expect(screen.getByText('诊断')).toBeInTheDocument();
-    expect(screen.getByText('节奏')).toBeInTheDocument();
-    expect(screen.getByText('角色')).toBeInTheDocument();
-    expect(screen.getByText('节拍')).toBeInTheDocument();
-    expect(screen.getByText('扩展')).toBeInTheDocument();
-    expect(screen.getByText('推演')).toBeInTheDocument();
-    expect(screen.getByText('版本')).toBeInTheDocument();
+    // 左侧侧边栏 5 个阶段按钮
+    expect(screen.getAllByText('灵感打磨').length).toBeGreaterThan(0);
+    expect(screen.getByText('骨架打磨')).toBeInTheDocument();
+    expect(screen.getByText('章节打磨')).toBeInTheDocument();
+    expect(screen.getByText('深度校验')).toBeInTheDocument();
+    expect(screen.getByText('颠覆性修改')).toBeInTheDocument();
+    // 默认显示灵感池 Tab（InspirationPanel 渲染，懒加载需 flush）
+    await flushLazy();
+    expect(screen.getByText('新建灵感')).toBeInTheDocument();
+    // 诊断范围选择器仅在深度校验→诊断 Tab 显示
+    navigateToTab('诊断');
+    await flushLazy();
     expect(screen.getByText('诊断范围：')).toBeInTheDocument();
   });
 
@@ -299,7 +372,8 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    // 徽章渲染在 tab 按钮上；同时诊断面板默认显示，"共 2 项"也含 "2"
+    // 切到深度校验→诊断 Tab，徽章渲染在子 Tab 按钮上
+    navigateToTab('诊断');
     const diagnosisTab = screen.getByText('诊断').closest('button')!;
     expect(within(diagnosisTab).getByText('2')).toBeInTheDocument();
   });
@@ -309,14 +383,18 @@ describe('OutlinePolishPanel', () => {
       outlineSnapshots: [makeSnapshot({ id: 's1' }), makeSnapshot({ id: 's2', label: 'snap2' })],
     });
     render(<OutlinePolishPanel />);
-    // tab 上有快照数徽章 "2"
-    const versionTab = screen.getByText('版本').closest('button')!;
+    // 切到颠覆性修改阶段（自动选中推演 Tab），子 Tab "版本花园" 上有快照数徽章 "2"
+    // 注意：只点阶段按钮、不点子 Tab，避免 VersionGardenPanel 渲染后 "版本花园" 文本重复
+    fireEvent.click(screen.getByText('颠覆性修改'));
+    const versionTab = screen.getByText('版本花园').closest('button')!;
     expect(within(versionTab).getByText('2')).toBeInTheDocument();
   });
 
   it('点击"全面分析"调用 runOutlinePolish', async () => {
     const { runOutlinePolish } = mockStore();
     render(<OutlinePolishPanel />);
+    // 全面分析按钮现在仅在 diagnosis Tab 显示
+    navigateToTab('诊断');
     fireEvent.click(screen.getByText('全面分析'));
     await waitFor(() => expect(runOutlinePolish).toHaveBeenCalledWith('all'));
   });
@@ -324,6 +402,7 @@ describe('OutlinePolishPanel', () => {
   it('分析中按钮显示"诊断中"且 disabled', () => {
     mockStore({ isPolishingOutline: true });
     render(<OutlinePolishPanel />);
+    navigateToTab('诊断');
     expect(screen.getByText('诊断中')).toBeInTheDocument();
     expect(screen.getByText('诊断中').closest('button')).toBeDisabled();
   });
@@ -331,6 +410,7 @@ describe('OutlinePolishPanel', () => {
   it('无章节时"全面分析"按钮 disabled', () => {
     mockStore({ chapters: [] });
     render(<OutlinePolishPanel />);
+    navigateToTab('诊断');
     expect(screen.getByText('全面分析').closest('button')).toBeDisabled();
   });
 
@@ -339,6 +419,7 @@ describe('OutlinePolishPanel', () => {
       chapters: [makeChapter({ id: 'c1', title: '开端' })],
     });
     render(<OutlinePolishPanel />);
+    navigateToTab('诊断');
     const select = screen.getAllByRole('combobox')[0];
     fireEvent.change(select, { target: { value: 'c1' } });
     // 切换后再点全面分析，应传 'c1'
@@ -350,12 +431,14 @@ describe('OutlinePolishPanel', () => {
   it('无报告时不显示导出按钮', () => {
     mockStore({ lastOutlineReport: null });
     render(<OutlinePolishPanel />);
+    navigateToTab('诊断');
     expect(screen.queryByText('导出')).not.toBeInTheDocument();
   });
 
   it('有报告时显示导出按钮', () => {
     mockStore({ lastOutlineReport: makeReport() });
     render(<OutlinePolishPanel />);
+    navigateToTab('诊断');
     expect(screen.getByText('导出')).toBeInTheDocument();
   });
 
@@ -363,6 +446,7 @@ describe('OutlinePolishPanel', () => {
     isElectronMock.mockReturnValue(false);
     mockStore({ lastOutlineReport: makeReport() });
     render(<OutlinePolishPanel />);
+    navigateToTab('诊断');
     // mock URL.createObjectURL / DOM
     const clickSpy = vi.fn();
     const revokeSpy = vi.fn();
@@ -400,6 +484,7 @@ describe('OutlinePolishPanel', () => {
     } as unknown as ElectronAPI;
     mockStore({ lastOutlineReport: makeReport() });
     render(<OutlinePolishPanel />);
+    navigateToTab('诊断');
     fireEvent.click(screen.getByText('导出'));
     await waitFor(() => expect(saveFileMock).toHaveBeenCalled());
     await waitFor(() => expect(writeMock).toHaveBeenCalled());
@@ -417,6 +502,7 @@ describe('OutlinePolishPanel', () => {
     } as unknown as ElectronAPI;
     mockStore({ lastOutlineReport: makeReport() });
     render(<OutlinePolishPanel />);
+    navigateToTab('诊断');
     fireEvent.click(screen.getByText('导出'));
     await waitFor(() => expect(saveFileMock).toHaveBeenCalled());
     // 等待微任务
@@ -434,6 +520,7 @@ describe('OutlinePolishPanel', () => {
     } as unknown as ElectronAPI;
     mockStore({ lastOutlineReport: makeReport() });
     render(<OutlinePolishPanel />);
+    navigateToTab('诊断');
     fireEvent.click(screen.getByText('导出'));
     await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith('导出失败', '导出通道不可用，请重启应用后重试'));
     delete window.electronAPI;
@@ -449,6 +536,7 @@ describe('OutlinePolishPanel', () => {
     } as unknown as ElectronAPI;
     mockStore({ lastOutlineReport: makeReport() });
     render(<OutlinePolishPanel />);
+    navigateToTab('诊断');
     fireEvent.click(screen.getByText('导出'));
     await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith('导出失败', '文件写入被拒绝或发生错误，请检查路径权限后重试'));
     delete window.electronAPI;
@@ -463,19 +551,22 @@ describe('OutlinePolishPanel', () => {
     } as unknown as ElectronAPI;
     mockStore({ lastOutlineReport: makeReport() });
     render(<OutlinePolishPanel />);
+    navigateToTab('诊断');
     fireEvent.click(screen.getByText('导出'));
     await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith('导出失败', 'disk full'));
     delete window.electronAPI;
   });
 
   // ============ Tab 切换 ============
-  it('默认显示诊断 tab，切到骨架 tab 显示核心驱动锁定', () => {
+  it('默认显示灵感池 tab，切到骨架 tab 显示核心驱动锁定', async () => {
     mockStore({ lastOutlineReport: null });
     render(<OutlinePolishPanel />);
-    // 默认在诊断：空态
-    expect(screen.getByText('点击"全面分析"')).toBeInTheDocument();
-    // 切到骨架
-    fireEvent.click(screen.getByText('骨架'));
+    // 默认 Tab 现在是灵感池（InspirationPanel 渲染）
+    await flushLazy();
+    expect(screen.getByText('新建灵感')).toBeInTheDocument();
+    // 切到骨架打磨→骨架 Tab，SkeletonTab 渲染核心驱动锁定区块
+    navigateToTab('骨架');
+    await flushLazy();
     expect(screen.getByText('核心驱动锁定')).toBeInTheDocument();
   });
 
@@ -483,7 +574,7 @@ describe('OutlinePolishPanel', () => {
   it('未锁定核心驱动时显示类型选择 + 文本框 + 锁定按钮', () => {
     mockStore({ coreDriver: null });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('骨架'));
+    navigateToTab('骨架');
     expect(screen.getByText('人物驱动')).toBeInTheDocument();
     expect(screen.getByText('情节驱动')).toBeInTheDocument();
     expect(screen.getByText('主题驱动')).toBeInTheDocument();
@@ -494,7 +585,7 @@ describe('OutlinePolishPanel', () => {
   it('切换驱动类型时 placeholder 跟随变化', () => {
     mockStore({ coreDriver: null });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('骨架'));
+    navigateToTab('骨架');
     expect(screen.getByPlaceholderText(/主角核心弧光/)).toBeInTheDocument();
     fireEvent.click(screen.getByText('情节驱动'));
     expect(screen.getByPlaceholderText(/核心冲突/)).toBeInTheDocument();
@@ -505,14 +596,14 @@ describe('OutlinePolishPanel', () => {
   it('空描述时锁定按钮 disabled', () => {
     mockStore({ coreDriver: null });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('骨架'));
+    navigateToTab('骨架');
     expect(screen.getByText('锁定核心驱动').closest('button')).toBeDisabled();
   });
 
   it('填入描述后点击锁定调用 lockCoreDriver', () => {
     const { lockCoreDriver } = mockStore({ coreDriver: null });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('骨架'));
+    navigateToTab('骨架');
     const textarea = screen.getByPlaceholderText(/主角核心弧光/);
     fireEvent.change(textarea, { target: { value: '主角弧光描述' } });
     fireEvent.click(screen.getByText('锁定核心驱动'));
@@ -530,7 +621,7 @@ describe('OutlinePolishPanel', () => {
     };
     mockStore({ coreDriver: driver });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('骨架'));
+    navigateToTab('骨架');
     expect(screen.getByText('人物驱动')).toBeInTheDocument();
     expect(screen.getByText('锁定描述')).toBeInTheDocument();
     expect(screen.getByText('生成冲突罗盘')).toBeInTheDocument();
@@ -543,7 +634,7 @@ describe('OutlinePolishPanel', () => {
       conflictCompass: [],
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('骨架'));
+    navigateToTab('骨架');
     fireEvent.click(screen.getByText('解锁重选'));
     expect(unlockCoreDriver).toHaveBeenCalled();
     expect(confirmMock).not.toHaveBeenCalled();
@@ -559,7 +650,7 @@ describe('OutlinePolishPanel', () => {
       }],
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('骨架'));
+    navigateToTab('骨架');
     fireEvent.click(screen.getByText('解锁重选'));
     expect(confirmMock).toHaveBeenCalledWith('解锁后已生成的冲突罗盘将被清空，确定吗？');
     await waitFor(() => expect(unlockCoreDriver).toHaveBeenCalled());
@@ -572,7 +663,7 @@ describe('OutlinePolishPanel', () => {
       conflictCompass: [{ layer: 'inner', description: 'd', seeds: [] }],
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('骨架'));
+    navigateToTab('骨架');
     fireEvent.click(screen.getByText('解锁重选'));
     expect(unlockCoreDriver).not.toHaveBeenCalled();
   });
@@ -582,7 +673,7 @@ describe('OutlinePolishPanel', () => {
       coreDriver: { type: 'character', description: 'd', lockedAt: '2025-01-01T00:00:00.000Z' },
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('骨架'));
+    navigateToTab('骨架');
     fireEvent.click(screen.getByText('生成冲突罗盘'));
     await waitFor(() => expect(fetchConflictCompass).toHaveBeenCalled());
   });
@@ -593,7 +684,7 @@ describe('OutlinePolishPanel', () => {
       conflictCompass: [{ layer: 'inner', description: '内心挣扎描述', seeds: ['种子1'] }],
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('骨架'));
+    navigateToTab('骨架');
     expect(screen.getByText('重新生成冲突罗盘')).toBeInTheDocument();
     // 冲突罗盘区域渲染
     expect(screen.getByText('冲突罗盘')).toBeInTheDocument();
@@ -604,7 +695,7 @@ describe('OutlinePolishPanel', () => {
   it('点击生成结构变体调用 fetchStructureVariants', async () => {
     const { fetchStructureVariants } = mockStore();
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('骨架'));
+    navigateToTab('骨架');
     fireEvent.click(screen.getByText('生成 3 套结构变体'));
     await waitFor(() => expect(fetchStructureVariants).toHaveBeenCalled());
   });
@@ -622,7 +713,7 @@ describe('OutlinePolishPanel', () => {
       }],
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('骨架'));
+    navigateToTab('骨架');
     expect(screen.getByText('经典线性')).toBeInTheDocument();
     expect(screen.getByText('线性叙事')).toBeInTheDocument();
     // "优势：清晰" 跨 span + text，用 textContent 匹配
@@ -636,12 +727,12 @@ describe('OutlinePolishPanel', () => {
   it('无报告时诊断 tab 显示"点击全面分析"', () => {
     mockStore({ lastOutlineReport: null });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('诊断'));
+    navigateToTab('诊断');
     expect(screen.getByText('点击"全面分析"')).toBeInTheDocument();
     expect(screen.getByText('生成多维度诊断报告')).toBeInTheDocument();
   });
 
-  it('有 issues 时诊断 tab 展示 issue 卡片 + 总数 + 未解决数', () => {
+  it('有 issues 时诊断 tab 展示故事体检报告 + 三色分组 + issue 卡片', () => {
     mockStore({
       lastOutlineReport: makeReport({
         issues: [
@@ -651,11 +742,12 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('诊断'));
-    // "共 2 项 · 未解决 2" 中 "2" 在嵌套 span，校验外层 textContent
-    const summary = screen.getByText(/共 \d+ 项/);
-    expect(summary.textContent).toMatch(/共 2 项/);
-    expect(summary.textContent).toMatch(/未解决 2/);
+    navigateToTab('诊断');
+    // 报告头
+    expect(screen.getByText('故事体检报告')).toBeInTheDocument();
+    // 三色分组：error → 必须修，warning → 建议修
+    expect(screen.getByText('必须修')).toBeInTheDocument();
+    expect(screen.getByText('建议修')).toBeInTheDocument();
     expect(screen.getByText('结构问题')).toBeInTheDocument();
     expect(screen.getByText('结构建议')).toBeInTheDocument();
     expect(screen.getByText('节奏问题')).toBeInTheDocument();
@@ -673,7 +765,7 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('诊断'));
+    navigateToTab('诊断');
     fireEvent.click(screen.getByText('[第一章]'));
     expect(setCurrentChapter).toHaveBeenCalledWith('c-1');
   });
@@ -685,7 +777,7 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('诊断'));
+    navigateToTab('诊断');
     fireEvent.click(screen.getByText('采纳'));
     expect(resolveOutlineIssue).toHaveBeenCalledWith('i1');
   });
@@ -697,9 +789,10 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('诊断'));
+    navigateToTab('诊断');
     expect(screen.getByText('撤销采纳')).toBeInTheDocument();
-    expect(screen.getByText('已采纳')).toBeInTheDocument();
+    // "已采纳" 同时出现在区块标题和卡片徽章中，用 getAllByText
+    expect(screen.getAllByText('已采纳').length).toBeGreaterThan(0);
   });
 
   it('点击"忽略"调用 ignoreOutlineIssue 且按钮区隐藏', () => {
@@ -709,7 +802,7 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('诊断'));
+    navigateToTab('诊断');
     fireEvent.click(screen.getByText('忽略'));
     expect(ignoreOutlineIssue).toHaveBeenCalledWith('i1');
   });
@@ -724,7 +817,7 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('诊断'));
+    navigateToTab('诊断');
     fireEvent.click(screen.getByText('全部采纳'));
     expect(batchResolveOutlineIssues).toHaveBeenCalledWith();
   });
@@ -736,7 +829,7 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('诊断'));
+    navigateToTab('诊断');
     expect(screen.queryByText('全部采纳')).not.toBeInTheDocument();
   });
 
@@ -750,7 +843,7 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('诊断'));
+    navigateToTab('诊断');
     expect(screen.getByText('结构问题')).toBeInTheDocument();
     expect(screen.getByText('节奏问题')).toBeInTheDocument();
     // 维度筛选 chip 在 flex-wrap 容器中，点击其中 "结构递进" chip
@@ -761,52 +854,55 @@ describe('OutlinePolishPanel', () => {
     expect(screen.queryByText('节奏问题')).not.toBeInTheDocument();
   });
 
-  it('点击级别筛选只显示对应级别 issues', () => {
+  it('三色分组：error 进必须修、warning/info 进建议修', () => {
     mockStore({
       lastOutlineReport: makeReport({
         issues: [
           makeIssue({ id: 'i1', severity: 'error', description: '严重问题' }),
           makeIssue({ id: 'i2', severity: 'warning', description: '警告问题' }),
+          makeIssue({ id: 'i3', severity: 'info', description: '提示问题' }),
         ],
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('诊断'));
-    fireEvent.click(screen.getByText('严重'));
+    navigateToTab('诊断');
+    // 三类 issue 都可见（分别在必须修/建议修区块内）
     expect(screen.getByText('严重问题')).toBeInTheDocument();
-    expect(screen.queryByText('警告问题')).not.toBeInTheDocument();
+    expect(screen.getByText('警告问题')).toBeInTheDocument();
+    expect(screen.getByText('提示问题')).toBeInTheDocument();
   });
 
-  it('筛选后无匹配 issues 显示"当前筛选下无诊断项"', () => {
+  it('无活跃问题时显示"已通过"区块和鼓励态', () => {
     mockStore({
       lastOutlineReport: makeReport({
-        issues: [makeIssue({ id: 'i1', severity: 'warning' })],
+        issues: [makeIssue({ id: 'i1', severity: 'warning', resolved: true })],
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('诊断'));
-    fireEvent.click(screen.getByText('严重'));
-    expect(screen.getByText('当前筛选下无诊断项')).toBeInTheDocument();
+    navigateToTab('诊断');
+    // 全部通过鼓励态
+    expect(screen.getByText('本轮体检全部通过')).toBeInTheDocument();
   });
 
   // ============ PacingTab ============
-  it('无报告时节奏 tab 显示空态', () => {
+  it('无报告时节奏 tab 显示空态', async () => {
     mockStore({ lastOutlineReport: null });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('节奏'));
-    expect(screen.getByText('查看节奏与情感曲线')).toBeInTheDocument();
+    navigateToTab('节奏');
+    await flushLazy();
+    expect(screen.getByText('点击上方按钮运行节奏检测')).toBeInTheDocument();
   });
 
-  it('有报告时节奏 tab 显示三幕比例 + 张力曲线 + 情感曲线', () => {
+  it('有报告时节奏 tab 显示三幕比例 + 张力曲线 + 情感曲线', async () => {
     mockStore({
       lastOutlineReport: makeReport({
-        threeActRatio: [25, 50, 25],
         pacingCurve: [{ chapterId: 'c-1', chapterTitle: '第一章', tension: 60, wordCount: 1000 }],
         emotionCurve: [{ chapterId: 'c-1', chapterTitle: '第一章', emotion: 70 }],
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('节奏'));
+    navigateToTab('节奏');
+    await flushLazy();
     expect(screen.getByText('三幕结构比例')).toBeInTheDocument();
     expect(screen.getByText('开端 25%')).toBeInTheDocument();
     expect(screen.getByText('发展 50%')).toBeInTheDocument();
@@ -825,7 +921,7 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('节奏'));
+    navigateToTab('节奏');
     // 开端 5% < 8，不显示文字
     expect(screen.queryByText('开端 5%')).not.toBeInTheDocument();
     expect(screen.getByText('发展 80%')).toBeInTheDocument();
@@ -840,7 +936,7 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('节奏'));
+    navigateToTab('节奏');
     expect(screen.getByText('伏笔密度热力图')).toBeInTheDocument();
     // "第一章" 同时出现在范围选择器和热力图，用 title 锚定热力图项
     expect(screen.getByTitle('埋设 2')).toBeInTheDocument();
@@ -856,7 +952,7 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('节奏'));
+    navigateToTab('节奏');
     // 热力图行是 button，title 含 "埋设 1"，点击行内任意元素触发
     const densityRow = screen.getByTitle('埋设 1').closest('button')!;
     fireEvent.click(densityRow);
@@ -864,11 +960,12 @@ describe('OutlinePolishPanel', () => {
   });
 
   // ============ CharactersTab ============
-  it('无报告或无角色弧光时显示空态', () => {
+  it('无报告或无角色弧光时显示空态', async () => {
     mockStore({ lastOutlineReport: null });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('角色'));
-    expect(screen.getByText('查看角色弧光分析')).toBeInTheDocument();
+    navigateToTab('弧光');
+    await flushLazy();
+    expect(screen.getByText('点击上方按钮运行全本弧光校验')).toBeInTheDocument();
   });
 
   it('有角色弧光时按风险等级排序展示', () => {
@@ -882,7 +979,8 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('角色'));
+    // CharacterArcPanel 现仅渲染于节奏 tab 的 <details>（需 report 存在）
+    navigateToTab('节奏');
     expect(screen.getByText(/共 3 位角色/)).toBeInTheDocument();
     // 角色名 span 在 button 中，过滤掉 tab 按钮 "角色"
     const nameSpans = screen.getAllByText(/风险角色$|健康角色$/);
@@ -908,7 +1006,8 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('角色'));
+    // CharacterArcPanel 现仅渲染于节奏 tab 的 <details>（需 report 存在）
+    navigateToTab('节奏');
     // 默认折叠，点击展开
     expect(screen.queryByText('弧光缺口')).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('主角甲'));
@@ -926,7 +1025,8 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('角色'));
+    // CharacterArcPanel 现仅渲染于节奏 tab 的 <details>（需 report 存在）
+    navigateToTab('节奏');
     fireEvent.click(screen.getByText('主角乙'));
     expect(screen.getByText('未检测到弧光缺口')).toBeInTheDocument();
   });
@@ -941,23 +1041,25 @@ describe('OutlinePolishPanel', () => {
       }),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('角色'));
+    // CharacterArcPanel 现仅渲染于节奏 tab 的 <details>（需 report 存在）
+    navigateToTab('节奏');
     fireEvent.click(screen.getByText('主角丙'));
     expect(screen.getByText('+3')).toBeInTheDocument();
   });
 
   // ============ BeatsTab ============
-  it('无章节时节拍 tab 显示"尚无章节，先去大纲面板创建章节"', () => {
+  it('无章节时节拍 tab 显示"尚无章节，先去大纲面板创建章节"', async () => {
     mockStore({ chapters: [] });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('节拍'));
+    navigateToTab('节拍');
+    await flushLazy();
     expect(screen.getByText('尚无章节，先去大纲面板创建章节')).toBeInTheDocument();
   });
 
   it('节拍 tab 渲染 5 大节拍槽位', () => {
     mockStore({ chapters: [makeChapter()] });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('节拍'));
+    navigateToTab('节拍');
     expect(screen.getByText('开章钩子')).toBeInTheDocument();
     expect(screen.getByText('推进节拍')).toBeInTheDocument();
     expect(screen.getByText('中间转折')).toBeInTheDocument();
@@ -971,7 +1073,7 @@ describe('OutlinePolishPanel', () => {
       currentChapterId: 'c-1',
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('节拍'));
+    navigateToTab('节拍');
     fireEvent.click(screen.getByText('生成节拍'));
     await waitFor(() => expect(generateBeatsForChapter).toHaveBeenCalledWith('c-1'));
   });
@@ -988,7 +1090,7 @@ describe('OutlinePolishPanel', () => {
       currentChapterId: 'c-1',
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('节拍'));
+    navigateToTab('节拍');
     expect(screen.getByText('已锁定')).toBeInTheDocument();
     // 5 个节拍槽位中只有 hook 锁定，其余 4 个显示 "未锁"
     expect(screen.getAllByText('未锁').length).toBeGreaterThanOrEqual(1);
@@ -1005,7 +1107,7 @@ describe('OutlinePolishPanel', () => {
       currentChapterId: 'c-1',
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('节拍'));
+    navigateToTab('节拍');
     // 第一个节拍槽位（hook）的"未锁"按钮
     const lockButtons = screen.getAllByText('未锁');
     fireEvent.click(lockButtons[0]);
@@ -1018,7 +1120,7 @@ describe('OutlinePolishPanel', () => {
       currentChapterId: 'c-1',
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('节拍'));
+    navigateToTab('节拍');
     const textarea = screen.getByPlaceholderText('填写开章钩子内容...');
     fireEvent.change(textarea, { target: { value: '新内容' } });
     expect(updateChapterBeat).toHaveBeenCalledWith('c-1', 'hook', '新内容');
@@ -1033,20 +1135,94 @@ describe('OutlinePolishPanel', () => {
       currentChapterId: 'c-1',
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('节拍'));
+    navigateToTab('节拍');
     // 页面有两个 combobox：顶部范围选择器 + 节拍章节选择器
     const selects = screen.getAllByRole('combobox');
     fireEvent.change(selects[selects.length - 1], { target: { value: 'c-2' } });
     expect(setCurrentChapter).toHaveBeenCalledWith('c-2');
   });
 
+  // ============ ChapterGridTab ============
+  it('概览 tab 无章节时显示空态提示', () => {
+    mockStore({ chapters: [] });
+    render(<OutlinePolishPanel />);
+    navigateToTab('概览');
+    expect(screen.getByText('暂无章节')).toBeInTheDocument();
+  });
+
+  it('概览 tab 有章节时显示卡片网格 + 全局统计', () => {
+    mockStore({
+      chapters: [
+        makeChapter({ id: 'c-1', title: '开端', order: 1, wordCount: 2000, status: 'done' }),
+        makeChapter({ id: 'c-2', title: '发展', order: 2, wordCount: 3000, status: 'writing' }),
+      ],
+    });
+    render(<OutlinePolishPanel />);
+    navigateToTab('概览');
+    // 全局统计
+    expect(screen.getByText('2')).toBeInTheDocument(); // 2 章
+    expect(screen.getByText('5,000')).toBeInTheDocument(); // 总字数
+    // 两张卡片
+    expect(screen.getByText('开端')).toBeInTheDocument();
+    expect(screen.getByText('发展')).toBeInTheDocument();
+    // 状态标签
+    expect(screen.getByText('已完成')).toBeInTheDocument();
+    expect(screen.getByText('写作中')).toBeInTheDocument();
+  });
+
+  it('概览 tab 点击卡片调用 setCurrentChapter', () => {
+    const { setCurrentChapter } = mockStore({
+      chapters: [
+        makeChapter({ id: 'c-1', title: '第一章', order: 1 }),
+        makeChapter({ id: 'c-2', title: '第二章', order: 2 }),
+      ],
+    });
+    render(<OutlinePolishPanel />);
+    navigateToTab('概览');
+    fireEvent.click(screen.getByTestId('chapter-card-c-2'));
+    expect(setCurrentChapter).toHaveBeenCalledWith('c-2');
+  });
+
+  it('概览 tab 有诊断报告时显示张力/情感指标条', () => {
+    mockStore({
+      chapters: [makeChapter({ id: 'c-1', title: '第一章', order: 1 })],
+      lastOutlineReport: makeReport({
+        pacingCurve: [{ chapterId: 'c-1', chapterTitle: '第一章', tension: 75, wordCount: 1000 }],
+        emotionCurve: [{ chapterId: 'c-1', chapterTitle: '第一章', emotion: 40 }],
+      }),
+    });
+    render(<OutlinePolishPanel />);
+    navigateToTab('概览');
+    // 指标条标签
+    expect(screen.getByText('张力')).toBeInTheDocument();
+    expect(screen.getByText('情感')).toBeInTheDocument();
+    // "含诊断指标"标记
+    expect(screen.getByText('含诊断指标')).toBeInTheDocument();
+  });
+
+  it('概览 tab 高亮当前选中章节卡片', () => {
+    mockStore({
+      chapters: [
+        makeChapter({ id: 'c-1', title: '第一章', order: 1 }),
+        makeChapter({ id: 'c-2', title: '第二章', order: 2 }),
+      ],
+      currentChapterId: 'c-2',
+    });
+    render(<OutlinePolishPanel />);
+    navigateToTab('概览');
+    const activeCard = screen.getByTestId('chapter-card-c-2');
+    // 高亮卡片含 ring class
+    expect(activeCard.className).toContain('ring-1');
+  });
+
   // ============ ExpansionTab ============
-  it('扩展 tab 渲染章节选择器', () => {
+  it('扩展 tab 渲染章节选择器', async () => {
     mockStore({
       chapters: [makeChapter({ id: 'c-1', title: '第一章' })],
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('扩展'));
+    navigateToTab('扩展');
+    await flushLazy();
     expect(screen.getByText('情节扩展器')).toBeInTheDocument();
     expect(screen.getByText('选择章节')).toBeInTheDocument();
   });
@@ -1059,7 +1235,7 @@ describe('OutlinePolishPanel', () => {
       ]),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('扩展'));
+    navigateToTab('扩展');
     const selects = screen.getAllByRole('combobox');
     fireEvent.change(selects[selects.length - 1], { target: { value: 'c-1' } });
     await waitFor(() => expect(fetchOutlineExpansion).toHaveBeenCalledWith('c-1'));
@@ -1075,7 +1251,7 @@ describe('OutlinePolishPanel', () => {
       fetchOutlineExpansion: vi.fn().mockResolvedValue([]),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('扩展'));
+    navigateToTab('扩展');
     const selects = screen.getAllByRole('combobox');
     fireEvent.change(selects[selects.length - 1], { target: { value: 'c-1' } });
     await waitFor(() => expect(screen.getByText('暂无扩展方案')).toBeInTheDocument());
@@ -1087,7 +1263,7 @@ describe('OutlinePolishPanel', () => {
       fetchOutlineExpansion: vi.fn().mockRejectedValue(new Error('AI 失败')),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('扩展'));
+    navigateToTab('扩展');
     const selects = screen.getAllByRole('combobox');
     fireEvent.change(selects[selects.length - 1], { target: { value: 'c-1' } });
     await waitFor(() => expect(screen.getByText('AI 失败')).toBeInTheDocument());
@@ -1100,7 +1276,7 @@ describe('OutlinePolishPanel', () => {
       fetchOutlineExpansion: vi.fn().mockRejectedValue('字符串错误'),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('扩展'));
+    navigateToTab('扩展');
     const selects = screen.getAllByRole('combobox');
     fireEvent.change(selects[selects.length - 1], { target: { value: 'c-1' } });
     await waitFor(() => expect(screen.getByText('生成失败')).toBeInTheDocument());
@@ -1114,7 +1290,7 @@ describe('OutlinePolishPanel', () => {
       ]),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('扩展'));
+    navigateToTab('扩展');
     const selects = screen.getAllByRole('combobox');
     fireEvent.change(selects[selects.length - 1], { target: { value: 'c-1' } });
     await waitFor(() => expect(screen.getByText('方案A')).toBeInTheDocument());
@@ -1132,7 +1308,7 @@ describe('OutlinePolishPanel', () => {
       ]),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('扩展'));
+    navigateToTab('扩展');
     const selects = screen.getAllByRole('combobox');
     fireEvent.change(selects[selects.length - 1], { target: { value: 'c-1' } });
     await waitFor(() => expect(screen.getByText('方案A')).toBeInTheDocument());
@@ -1154,7 +1330,7 @@ describe('OutlinePolishPanel', () => {
         .mockReturnValueOnce(new Promise(r => { resolveSecond = r; })),
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('扩展'));
+    navigateToTab('扩展');
     const select = screen.getAllByRole('combobox');
     const expansionSelect = select[select.length - 1];
     // 选 c-1
@@ -1174,7 +1350,7 @@ describe('OutlinePolishPanel', () => {
   it('推演 tab 渲染目标选择 + 改动描述 + 启动推演按钮', () => {
     mockStore({ chapters: [makeChapter({ id: 'c-1' })] });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('推演'));
+    navigateToTab('推演');
     expect(screen.getByText('因果推演预览')).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/描述假设性改动/)).toBeInTheDocument();
     expect(screen.getByText('启动推演')).toBeInTheDocument();
@@ -1183,7 +1359,7 @@ describe('OutlinePolishPanel', () => {
   it('空描述时启动推演按钮 disabled', () => {
     mockStore({ chapters: [makeChapter({ id: 'c-1' })] });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('推演'));
+    navigateToTab('推演');
     expect(screen.getByText('启动推演').closest('button')).toBeDisabled();
   });
 
@@ -1192,7 +1368,7 @@ describe('OutlinePolishPanel', () => {
       chapters: [makeChapter({ id: 'c-1' })],
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('推演'));
+    navigateToTab('推演');
     fireEvent.change(screen.getByPlaceholderText(/描述假设性改动/), { target: { value: '让导师死亡' } });
     fireEvent.click(screen.getByText('启动推演'));
     await waitFor(() => expect(runCausalPreview).toHaveBeenCalledWith('让导师死亡', 'c-1'));
@@ -1214,14 +1390,15 @@ describe('OutlinePolishPanel', () => {
       },
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('推演'));
+    navigateToTab('推演');
     expect(screen.getByText('变动影响报告')).toBeInTheDocument();
     // "综合风险：高" 在同一 div 内（"高" 是文本节点子），用 regex 匹配
     expect(screen.getByText(/综合风险/)).toBeInTheDocument();
     expect(screen.getByText(/综合风险/).textContent).toContain('高');
-    expect(screen.getByText('断裂')).toBeInTheDocument();
-    expect(screen.getByText('弱化')).toBeInTheDocument();
-    expect(screen.getByText('缺失')).toBeInTheDocument();
+    // 影响树重构后标签为「严重断裂 / 部分影响 / 轻微波动」（带 emoji 前缀，用 regex 匹配）
+    expect(screen.getByText(/严重断裂/)).toBeInTheDocument();
+    expect(screen.getByText(/部分影响/)).toBeInTheDocument();
+    expect(screen.getByText(/轻微波动/)).toBeInTheDocument();
     expect(screen.getByText('断裂影响')).toBeInTheDocument();
     // "替代：替代方案" 跨 span 与文本节点，用 textContent 匹配
     expect(screen.getByText((_, el) => !!el && el.textContent === '替代：替代方案')).toBeInTheDocument();
@@ -1240,23 +1417,119 @@ describe('OutlinePolishPanel', () => {
       },
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('推演'));
+    navigateToTab('推演');
     fireEvent.click(screen.getByText('清除'));
     expect(clearCausalImpact).toHaveBeenCalled();
   });
 
+  it('影响树：根节点显示改动目标章节标题 + 影响总数', () => {
+    mockStore({
+      chapters: [makeChapter({ id: 'c-1', title: '第一章' })],
+      lastCausalImpact: {
+        changeDescription: '让导师死亡',
+        targetId: 'c-1',
+        impacts: [
+          { type: 'broken', description: '断裂影响', alternative: '替代1' },
+          { type: 'weakened', description: '弱化影响', alternative: '替代2' },
+        ],
+        overallRisk: 'medium',
+        generatedAt: '2025-01-01T00:00:00.000Z',
+      },
+    });
+    render(<OutlinePolishPanel />);
+    navigateToTab('推演');
+    // 根节点显示目标章节标题（select 下拉也有"第一章"，故用 getAllByText）
+    expect(screen.getAllByText('第一章').length).toBeGreaterThan(0);
+    // 影响总数
+    expect(screen.getByText('2 处影响')).toBeInTheDocument();
+    // 改动描述也在根节点显示
+    expect(screen.getAllByText('让导师死亡').length).toBeGreaterThan(0);
+  });
+
+  it('影响树：按类型分三栏分支（断裂/弱化/缺失），各分支显示项数', () => {
+    mockStore({
+      chapters: [makeChapter({ id: 'c-1' })],
+      lastCausalImpact: {
+        changeDescription: '改动',
+        targetId: 'c-1',
+        impacts: [
+          { type: 'broken', description: '断裂1', alternative: 'a1' },
+          { type: 'broken', description: '断裂2', alternative: 'a2' },
+          { type: 'weakened', description: '弱化1', alternative: 'a3' },
+          { type: 'missing', description: '缺失1', alternative: 'a4' },
+        ],
+        overallRisk: 'high',
+        generatedAt: '2025-01-01T00:00:00.000Z',
+      },
+    });
+    render(<OutlinePolishPanel />);
+    navigateToTab('推演');
+    // 三个分支按钮存在
+    expect(screen.getByTestId('impact-branch-broken')).toBeInTheDocument();
+    expect(screen.getByTestId('impact-branch-weakened')).toBeInTheDocument();
+    expect(screen.getByTestId('impact-branch-missing')).toBeInTheDocument();
+    // 重构后「N 项」在两级显示：一级类型分支 + 二级实体分组（无 entityType 的归入 chapter）
+    // 断裂分支 2 项（无 entityType → 全归入 chapter 实体组）：分支头 + 实体组头各 1 处
+    expect(screen.getAllByText('2 项').length).toBe(2);
+    // 弱化、缺失各 1 项：每类分支头 + chapter 实体组头各 1 处 → 共 4 处
+    expect(screen.getAllByText('1 项').length).toBe(4);
+  });
+
+  it('影响树：点击分支头部可折叠/展开叶子', () => {
+    mockStore({
+      chapters: [makeChapter({ id: 'c-1' })],
+      lastCausalImpact: {
+        changeDescription: '改动',
+        targetId: 'c-1',
+        impacts: [
+          { type: 'broken', description: '断裂影响内容', alternative: '替代方案' },
+        ],
+        overallRisk: 'high',
+        generatedAt: '2025-01-01T00:00:00.000Z',
+      },
+    });
+    render(<OutlinePolishPanel />);
+    navigateToTab('推演');
+    // 初始展开：叶子描述可见
+    expect(screen.getByText('断裂影响内容')).toBeInTheDocument();
+    // 点击分支头部折叠
+    fireEvent.click(screen.getByTestId('impact-branch-broken'));
+    // 折叠后：叶子描述不可见
+    expect(screen.queryByText('断裂影响内容')).not.toBeInTheDocument();
+    // 再次点击展开
+    fireEvent.click(screen.getByTestId('impact-branch-broken'));
+    expect(screen.getByText('断裂影响内容')).toBeInTheDocument();
+  });
+
+  it('影响树：无影响时显示"可以放心改动"提示', () => {
+    mockStore({
+      chapters: [makeChapter({ id: 'c-1' })],
+      lastCausalImpact: {
+        changeDescription: '改动',
+        targetId: 'c-1',
+        impacts: [],
+        overallRisk: 'low',
+        generatedAt: '2025-01-01T00:00:00.000Z',
+      },
+    });
+    render(<OutlinePolishPanel />);
+    navigateToTab('推演');
+    expect(screen.getByText('未检测到连锁影响，可以放心改动')).toBeInTheDocument();
+  });
+
   // ============ SnapshotsTab ============
-  it('无快照时版本 tab 显示"暂无快照"', () => {
+  it('无快照时版本 tab 显示"暂无快照"', async () => {
     mockStore();
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('版本'));
+    navigateToTab('版本花园');
+    await flushLazy();
     expect(screen.getByText('暂无快照')).toBeInTheDocument();
   });
 
   it('无章节时保存按钮 disabled', () => {
     mockStore({ chapters: [] });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('版本'));
+    navigateToTab('版本花园');
     expect(screen.getByText('保存').closest('button')).toBeDisabled();
   });
 
@@ -1265,7 +1538,7 @@ describe('OutlinePolishPanel', () => {
       chapters: [makeChapter()],
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('版本'));
+    navigateToTab('版本花园');
     fireEvent.change(screen.getByPlaceholderText(/快照标签/), { target: { value: 'v1' } });
     fireEvent.click(screen.getByText('保存'));
     expect(saveOutlineSnapshot).toHaveBeenCalledWith('v1');
@@ -1281,7 +1554,7 @@ describe('OutlinePolishPanel', () => {
       ],
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('版本'));
+    navigateToTab('版本花园');
     expect(screen.getByText('第一轮')).toBeInTheDocument();
     expect(screen.getByText('2 个节点')).toBeInTheDocument();
   });
@@ -1295,7 +1568,7 @@ describe('OutlinePolishPanel', () => {
       ],
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('版本'));
+    navigateToTab('版本花园');
     // 默认折叠：[chapter] 标签不显示
     expect(screen.queryByText('[chapter]')).not.toBeInTheDocument();
     // 点击展开
@@ -1309,7 +1582,7 @@ describe('OutlinePolishPanel', () => {
       outlineSnapshots: [makeSnapshot({ id: 's1' })],
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('版本'));
+    navigateToTab('版本花园');
     const restoreBtn = screen.getByTitle('恢复结构（不影响正文）');
     fireEvent.click(restoreBtn);
     expect(restoreOutlineSnapshot).toHaveBeenCalledWith('s1');
@@ -1320,7 +1593,7 @@ describe('OutlinePolishPanel', () => {
       outlineSnapshots: [makeSnapshot({ id: 's1' })],
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('版本'));
+    navigateToTab('版本花园');
     const deleteBtn = screen.getByTitle('删除快照');
     fireEvent.click(deleteBtn);
     expect(deleteOutlineSnapshot).toHaveBeenCalledWith('s1');
@@ -1333,7 +1606,7 @@ describe('OutlinePolishPanel', () => {
       ],
     });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('版本'));
+    navigateToTab('版本花园');
     expect(screen.getByText(/伏笔速查（1）/)).toBeInTheDocument();
     // jsdom 不模拟 <details> 折叠隐藏，但 summary 文本与内容均渲染
     // 伏笔内容
@@ -1345,7 +1618,7 @@ describe('OutlinePolishPanel', () => {
   it('无伏笔时伏笔速查显示"暂无伏笔"', () => {
     mockStore({ foreshadows: [] });
     render(<OutlinePolishPanel />);
-    fireEvent.click(screen.getByText('版本'));
+    navigateToTab('版本花园');
     fireEvent.click(screen.getByText(/伏笔速查/));
     expect(screen.getByText('暂无伏笔')).toBeInTheDocument();
   });

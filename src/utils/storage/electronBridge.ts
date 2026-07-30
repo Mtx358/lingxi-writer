@@ -36,6 +36,23 @@ export class ElectronStorage implements StorageAPI {
     }
   }
 
+  // 批量写入：一次 IPC 写入多个 key，把一次项目保存的 8 次 storage.set 合并为 1 次 IPC。
+  // 主进程在 storage:writeBatch handler 内串行写入每个 key（共享 withWriteMutex），
+  // 返回 Record<key, boolean>。任一 key 失败时 toast 告知用户具体哪些 key 失败
+  async setMany(entries: Record<string, unknown>): Promise<void> {
+    try {
+      const results = await window.electronAPI!.storage.writeBatch(entries);
+      if (!results) return;
+      const failed = Object.entries(results).filter(([, ok]) => ok === false).map(([k]) => k);
+      if (failed.length > 0) {
+        toast.error('数据写入失败', `部分键持久化失败：${failed.join(', ')}。请检查磁盘空间或文件权限。`);
+      }
+    } catch (e) {
+      console.error('Failed to setMany storage:', e);
+      toast.error('数据写入失败', `批量持久化失败：${getErrorMessage(e)}。请检查磁盘空间或文件权限。`);
+    }
+  }
+
   async remove(key: string): Promise<void> {
     try {
       await window.electronAPI!.storage.remove(key);

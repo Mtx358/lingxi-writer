@@ -48,9 +48,12 @@ function safeIpcHandle(
   listener: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => any,
 ): void {
   try { ipcMain.removeHandler(channel); } catch { /* 首次注册时无已存在 handler，忽略 */ }
-  // 包装 listener：先做速率限制检查，超限直接抛错不执行业务逻辑
+  // 包装 listener：先做速率限制检查，超限直接抛错不执行业务逻辑；
+  // 最外层 try/catch 兜底：未预期异常的 Error.message 可能通过 ipcMain.handle 的
+  // rejection 机制序列化传回渲染层 invoke 的 catch，泄漏主进程路径/堆栈等内部细节，
+  // 故此处统一替换为通用文案，原始错误仅落盘。
   // 使用方括号访问避免与下方 replace_all 字面量冲突
-  ipcMain['handle'](channel, (event, ...args) => {
+  ipcMain['handle'](channel, async (event, ...args) => {
     const rateLimitError = ipcRateLimiter.check(channel, event.sender.id);
     if (rateLimitError) {
       const existing = rateLimitAuditState.get(channel);
@@ -75,7 +78,14 @@ function safeIpcHandle(
       }
       throw rateLimitError;
     }
-    return listener(event, ...args);
+    try {
+      return await listener(event, ...args);
+    } catch (e) {
+      // 未预期异常：落盘原始错误（含堆栈/路径供诊断），但回传给渲染层的是通用文案，
+      // 防止主进程文件系统结构、绝对路径等信息泄漏到渲染层被 XSS 利用做枚举
+      logger.error(`IPC handler ${channel} threw unhandled error`, e);
+      throw new Error(`操作失败，请重试（通道：${channel}）`);
+    }
   });
 }
 

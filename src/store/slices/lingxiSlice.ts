@@ -29,6 +29,7 @@ import type {
   Subplot,
   SubplotStatus,
   UpdateSchedule,
+  PolishLogEntry,
 } from '@/types';
 import {
   createEmptySettingCard,
@@ -42,6 +43,7 @@ import {
   generateBlueprintOverview,
   generateBlueprintChangeImpact,
   filterSensitiveWords,
+  generatePolishSummary,
 } from '@/utils/aiService';
 import { toast } from '@/hooks/useToast';
 import { getErrorMessage } from '@/lib/errorUtils';
@@ -56,7 +58,8 @@ type LingxiSlice = Pick<AppState,
   | 'unlockBlueprint' | 'generateBlueprintImpact' | 'clearBlueprintImpact'
   | 'subplots' | 'addSubplot' | 'updateSubplot' | 'deleteSubplot' | 'progressSubplot'
   | 'updateSchedule' | 'updateUpdateSchedule' | 'getStockpileDays'
-  | 'runSensitiveWordCheck' | 'clearSensitiveWordCheck'>;
+  | 'runSensitiveWordCheck' | 'clearSensitiveWordCheck'
+  | 'polishLog' | 'polishSessionActions' | 'recordPolishAction' | 'finishPolishSession' | 'clearPolishLog'>;
 
 export const createLingxiSlice: StateCreator<AppState, [], [], LingxiSlice> = (set, get) => ({
   // ===== 灵犀设定 =====
@@ -485,6 +488,92 @@ export const createLingxiSlice: StateCreator<AppState, [], [], LingxiSlice> = (s
   },
 
   clearSensitiveWordCheck: () => set({ lastSensitiveWordCheck: null }),
+
+  // ===== 打磨日志域（3.4 打磨成果摘要） =====
+  polishLog: [],
+  // 会话计数器初始值：startedAt 记录会话开始时间，退出时用于计算耗时
+  polishSessionActions: {
+    foreshadowsResolved: 0,
+    pacingAdjusted: 0,
+    arcFixed: 0,
+    newInspirations: 0,
+    snapshotsCreated: 0,
+    startedAt: Date.now(),
+  },
+
+  recordPolishAction: (type) => {
+    set(state => {
+      const a = state.polishSessionActions;
+      return {
+        polishSessionActions: {
+          ...a,
+          foreshadowsResolved: a.foreshadowsResolved + (type === 'foreshadow' ? 1 : 0),
+          pacingAdjusted: a.pacingAdjusted + (type === 'pacing' ? 1 : 0),
+          arcFixed: a.arcFixed + (type === 'arc' ? 1 : 0),
+          newInspirations: a.newInspirations + (type === 'inspiration' ? 1 : 0),
+          snapshotsCreated: a.snapshotsCreated + (type === 'snapshot' ? 1 : 0),
+        },
+      };
+    });
+  },
+
+  finishPolishSession: () => {
+    const a = get().polishSessionActions;
+    const now = Date.now();
+    const durationMinutes = Math.max(1, Math.round((now - a.startedAt) / 60000));
+    const summary = generatePolishSummary({
+      foreshadowsResolved: a.foreshadowsResolved,
+      pacingAdjusted: a.pacingAdjusted,
+      arcFixed: a.arcFixed,
+      newInspirations: a.newInspirations,
+      snapshotsCreated: a.snapshotsCreated,
+    });
+    // 仅在有实际动作时记录日志，避免空会话污染日志
+    const hasActions = a.foreshadowsResolved + a.pacingAdjusted + a.arcFixed + a.newInspirations + a.snapshotsCreated > 0;
+    if (!hasActions) {
+      // 重置会话计数器，但不写日志
+      set({
+        polishSessionActions: {
+          foreshadowsResolved: 0,
+          pacingAdjusted: 0,
+          arcFixed: 0,
+          newInspirations: 0,
+          snapshotsCreated: 0,
+          startedAt: now,
+        },
+      });
+      return;
+    }
+    const entry: PolishLogEntry = {
+      id: generateId(),
+      startedAt: new Date(a.startedAt).toISOString(),
+      finishedAt: new Date(now).toISOString(),
+      durationMinutes,
+      foreshadowsResolved: a.foreshadowsResolved,
+      pacingAdjusted: a.pacingAdjusted,
+      arcFixed: a.arcFixed,
+      newInspirations: a.newInspirations,
+      snapshotsCreated: a.snapshotsCreated,
+      summary,
+    };
+    set(state => ({
+      polishLog: [entry, ...state.polishLog].slice(0, 100), // 最多保留 100 条
+      polishSessionActions: {
+        foreshadowsResolved: 0,
+        pacingAdjusted: 0,
+        arcFixed: 0,
+        newInspirations: 0,
+        snapshotsCreated: 0,
+        startedAt: now,
+      },
+    }));
+    markDirty();
+  },
+
+  clearPolishLog: () => {
+    set({ polishLog: [] });
+    markDirty();
+  },
 });
 
 // 注：灵犀域的项目切换重置不在此处实现，而是由 projectSlice 通过 PROJECT_SWITCH_RESET

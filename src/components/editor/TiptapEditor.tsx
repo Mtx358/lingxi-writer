@@ -9,6 +9,7 @@ import { TextStyle } from '@tiptap/extension-text-style';
 import Color from '@tiptap/extension-color';
 import { Bold, Italic, Underline as UnderlineIcon, Strikethrough, Heading1, Heading2, Heading3, List, ListOrdered, Quote, Minus, Link2, Undo2, Redo2, Wand2, Clock, AtSign, X, Loader2 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
+import { useShallow } from 'zustand/react/shallow';
 import { DEFAULT_FORESHADOW_STATUS, DEFAULT_FORESHADOW_PRIORITY } from '@/types';
 import { EDITOR_SWITCH_DELAY, EDITOR_CONTENT_UPDATE_DEBOUNCE, EDITOR_EXTERNAL_SYNC_DELAY } from '@/constants/config';
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
@@ -21,20 +22,37 @@ import MentionPanel from './MentionPanel';
 import EditorContextMenu from './EditorContextMenu';
 
 export default function TiptapEditor() {
-  const currentChapterId = useAppStore(s => s.currentChapterId);
-  const chapters = useAppStore(s => s.chapters);
+  // 合并为单个 useShallow 订阅：此前 11 个独立 useAppStore 调用注册 11 个订阅，
+  // 编辑器每次按键都可能触发 store 更新；合并后仅 1 个订阅 + shallow 比较，
+  // actions 引用稳定不触发重渲染，仅数据切片变化时才重渲染
+  const {
+    currentChapterId,
+    chapters,
+    saveVersion,
+    addForeshadow,
+    pendingEditorInsert,
+    setPendingEditorInsert,
+    pendingScrollTo,
+    setPendingScrollTo,
+    setCurrentChapter,
+    contentEpoch,
+    setAIGenerating,
+  } = useAppStore(useShallow(s => ({
+    currentChapterId: s.currentChapterId,
+    chapters: s.chapters,
+    saveVersion: s.saveVersion,
+    addForeshadow: s.addForeshadow,
+    pendingEditorInsert: s.pendingEditorInsert,
+    setPendingEditorInsert: s.setPendingEditorInsert,
+    pendingScrollTo: s.pendingScrollTo,
+    setPendingScrollTo: s.setPendingScrollTo,
+    setCurrentChapter: s.setCurrentChapter,
+    contentEpoch: s.contentEpoch,
+    setAIGenerating: s.setAIGenerating,
+  })));
   // 派生 currentChapter 用 useMemo 收敛：避免在 selector 内执行 find 派生对象，
   // 减少 store 每次更新时 selector 的执行开销与潜在的不必要重渲染
   const currentChapter = useMemo(() => chapters.find(c => c.id === currentChapterId), [chapters, currentChapterId]);
-  const saveVersion = useAppStore(s => s.saveVersion);
-  const addForeshadow = useAppStore(s => s.addForeshadow);
-  const pendingEditorInsert = useAppStore(s => s.pendingEditorInsert);
-  const setPendingEditorInsert = useAppStore(s => s.setPendingEditorInsert);
-  const pendingScrollTo = useAppStore(s => s.pendingScrollTo);
-  const setPendingScrollTo = useAppStore(s => s.setPendingScrollTo);
-  const setCurrentChapter = useAppStore(s => s.setCurrentChapter);
-  const contentEpoch = useAppStore(s => s.contentEpoch);
-  const setAIGenerating = useAppStore(s => s.setAIGenerating);
   const [showContextMenu, setShowContextMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [showMentionPanel, setShowMentionPanel] = useState(false);
@@ -203,6 +221,8 @@ export default function TiptapEditor() {
       const timer = setTimeout(() => { isSwitchingRef.current = false; }, EDITOR_SWITCH_DELAY);
       return () => clearTimeout(timer);
     }
+    // 章节未变化：无副作用，显式返回 undefined 以满足 noImplicitReturns
+    return undefined;
   }, [currentChapterId, editor, abortGeneration]);
 
   // 监听 contentEpoch：外部（恢复版本/恢复草稿）替换章节内容时，强制编辑器刷新

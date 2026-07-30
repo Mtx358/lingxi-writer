@@ -41,13 +41,27 @@ export function Section({
 }
 
 /**
- * 空态提示：大图标 + 一行说明文本。
+ * 空态提示：大图标 + 一行说明文本（可选副标题）。
+ * - text：旧版单行用法（向后兼容）
+ * - hint / subHint：新版两行用法，hint 为主标题，subHint 为辅助说明
  */
-export function EmptyHint({ icon: Icon, text }: { icon: typeof Target; text: string }) {
+export function EmptyHint({
+  icon: Icon,
+  text,
+  hint,
+  subHint,
+}: {
+  icon: typeof Target;
+  text?: string;
+  hint?: string;
+  subHint?: string;
+}) {
+  const main = hint ?? text ?? '';
   return (
     <div className="p-6 text-center">
       <Icon className="w-8 h-8 text-ink-600 mx-auto mb-2" />
-      <div className="text-xs text-ink-500">{text}</div>
+      <div className="text-xs text-ink-500">{main}</div>
+      {subHint && <div className="text-[10px] text-ink-600 mt-1 leading-relaxed">{subHint}</div>}
     </div>
   );
 }

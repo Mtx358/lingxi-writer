@@ -53,12 +53,27 @@ const PROJECT_SWITCH_RESET = {
   settingCardQuestions: [],
   isSettingCardBusy: false,
   isBlueprintBusy: false,
+  // 打磨日志域：按项目维度，切换时清空（持久化由 saveProject 单独处理）
+  polishLog: [] as AppState['polishLog'],
+  polishSessionActions: {
+    foreshadowsResolved: 0,
+    pacingAdjusted: 0,
+    arcFixed: 0,
+    newInspirations: 0,
+    snapshotsCreated: 0,
+    startedAt: Date.now(),
+  },
   // undo/redo 历史与待插入 AI 内容：跨项目泄漏会造成数据污染
   histories: {} as AppState['histories'],
   pendingEditorInsert: null as AppState['pendingEditorInsert'],
   // 跨章节跳转请求：项目 A 设置的 pendingScrollTo（指向 A 的 chapterId）
   // 若不被重置，切到项目 B 后 TiptapEditor 会收到陈旧请求，尝试滚动到不存在的章节
   pendingScrollTo: null as AppState['pendingScrollTo'],
+  // 章节批注：按项目维度，切换时清空（持久化由 saveProject 单独处理）
+  comments: {} as AppState['comments'],
+  // 伏笔回收合理性检测 + 逾期应急回收方案：按项目维度，切换时清空
+  foreshadowPayoffChecks: [] as AppState['foreshadowPayoffChecks'],
+  emergencyRecoveryPlans: [] as AppState['emergencyRecoveryPlans'],
 };
 
 /**
@@ -191,15 +206,14 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     // P-H2 修复：用 Promise.all 并行读取 7 个 key，避免串行 await 在 localStorage
     // 模式下逐次 tick 推迟状态就绪。并发守卫改为 await 后单次校验：
     // Promise.all 整体 resolve 时若已被新请求取代，直接丢弃结果即可
+    //
+    // 部分失败容错：改用 Promise.allSettled，单个 key 读取失败（如本地解密异常、
+    // 数据损坏抛错）时回退到默认空数组/对象，避免一个 key 失败导致整个 openProject
+    // reject——用户将完全无法打开该项目。失败情况记录日志并提示用户。
     const [
-      chapters,
-      characters,
-      settingCategories,
-      settingItems,
-      foreshadows,
-      materials,
-      versions,
-    ] = await Promise.all([
+      chaptersR, charactersR, settingCategoriesR, settingItemsR,
+      foreshadowsR, materialsR, versionsR, commentsR,
+    ] = await Promise.allSettled([
       storage.get<Chapter[]>(`project_${projectId}_chapters`, []),
       storage.get<AppState['characters']>(`project_${projectId}_characters`, []),
       storage.get<AppState['settingCategories']>(`project_${projectId}_settingCategories`, []),
@@ -207,7 +221,24 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       storage.get<AppState['foreshadows']>(`project_${projectId}_foreshadows`, []),
       storage.get<AppState['materials']>(`project_${projectId}_materials`, []),
       storage.get<Record<string, AppState['versions'][string]>>(`project_${projectId}_versions`, {}),
+      storage.get<AppState['comments']>(`project_${projectId}_comments`, {}),
     ]);
+    // 收集失败 key 用于统一提示，避免 toast 风暴
+    const failedKeys: string[] = [];
+    const settle = <T,>(r: PromiseSettledResult<T>, key: string, fallback: T): T => {
+      if (r.status === 'fulfilled') return r.value;
+      console.warn(`openProject: storage.get(${key}) failed, falling back to default:`, r.reason);
+      failedKeys.push(key);
+      return fallback;
+    };
+    const chapters = settle(chaptersR, 'chapters', [] as Chapter[]);
+    const characters = settle(charactersR, 'characters', [] as AppState['characters']);
+    const settingCategories = settle(settingCategoriesR, 'settingCategories', [] as AppState['settingCategories']);
+    const settingItems = settle(settingItemsR, 'settingItems', [] as AppState['settingItems']);
+    const foreshadows = settle(foreshadowsR, 'foreshadows', [] as AppState['foreshadows']);
+    const materials = settle(materialsR, 'materials', [] as AppState['materials']);
+    const versions = settle(versionsR, 'versions', {} as Record<string, AppState['versions'][string]>);
+    const comments = settle(commentsR, 'comments', {} as AppState['comments']);
     if (reqId !== openProjectRequestId) return; // 被新请求取代
     // localStorage 中的版本以增量 Diff 形式持久化，加载时重建完整内容。
     // 单个 chapter 的 delta 损坏不应让整个 openProject reject——用户无法打开该项目。
@@ -227,6 +258,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     // 循环外统一提示：多个章节 delta 损坏时只弹一次 toast，避免风暴
     if (failedDeltaChapterIds.length > 0) {
       toast.warning('章节历史版本加载失败', `部分章节历史版本已损坏并回退为空，受影响章节：${failedDeltaChapterIds.join('、')}`);
+    }
+    // 单个 key 读取失败的统一提示：用户需知道哪些数据未加载，避免误以为"项目本来就没有角色/伏笔"
+    if (failedKeys.length > 0) {
+      toast.warning('部分数据加载失败', `以下数据读取异常已回退为空：${failedKeys.join('、')}。建议从备份恢复或重新创建。`);
     }
     const project = projects.find(p => p.id === projectId);
 
@@ -260,6 +295,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       analysis: {},
       // 清空大纲打磨域：上一项目的核心驱动/冲突罗盘/结构变体/快照/扩展缓存不应残留到当前项目
       ...PROJECT_SWITCH_RESET,
+      // 批注：PROJECT_SWITCH_RESET 已置空，此处覆盖为本项目加载的批注
+      comments,
       // 灵犀助手域：同步当前项目的支线与存稿配置到顶层字段
       subplots: project?.subplots || [],
       updateSchedule: project?.updateSchedule || null,
@@ -277,6 +314,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     if (!data) return false;
 
     const { project, chapters, characters, settingCategories, settingItems, foreshadows, materials, versions } = data;
+    // .cwp 文件不含批注域，从 localStorage sidecar 加载（文件型项目批注跨会话保留）
+    const comments = await storage.get<AppState['comments']>(`project_${project.id}_comments`, {});
 
     // 切换项目文件时清理上一项目的素材图片缓存（与 closeProject 一致），
     // 覆盖"从项目 A 直接打开项目文件 B"不经过 closeProject 的场景
@@ -320,6 +359,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       analysis: {},
       // 清空大纲打磨域：上一项目的核心驱动/冲突罗盘/结构变体/快照/扩展缓存不应残留到当前项目
       ...PROJECT_SWITCH_RESET,
+      // 批注：PROJECT_SWITCH_RESET 已置空，此处覆盖为本项目 sidecar 加载的批注
+      comments,
       // 灵犀助手域：同步当前项目的支线与存稿配置到顶层字段
       subplots: project?.subplots || [],
       updateSchedule: project?.updateSchedule || null,
@@ -333,7 +374,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
   saveProject: async () => {
     if (get().isSaving) return false;
-    const { currentProjectId, currentProjectFilePath, projects, chapters, characters, settingCategories, settingItems, foreshadows, materials, versions } = get();
+    const { currentProjectId, currentProjectFilePath, projects, chapters, characters, settingCategories, settingItems, foreshadows, materials, versions, comments } = get();
 
     if (!currentProjectId) return false;
 
@@ -362,6 +403,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
         if (success) {
           await storage.backupProjectFile(currentProjectFilePath, 5);
+          // 批注作为 sidecar 持久化到 localStorage（.cwp 文件格式暂未收纳批注域），
+          // 文件型项目也能跨会话保留批注，仅不随 .cwp 导出
+          void storage.set(`project_${currentProjectId}_comments`, comments)
+            .catch(e => logError('persist comments sidecar failed', e, { projectId: currentProjectId }));
           // 重读最新 project：await 期间用户可能通过 updateProject 修改了 title/cover 等字段，
           // 闭包中的 updatedProject 基于陈旧 projects 快照构建，直接 set 会用陈旧字段覆盖
           // 并发修改导致丢失。totalWords 与 updatedAt 来自本次保存快照应保留；其他字段从
@@ -384,18 +429,24 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           return false;
         }
       } else {
-        await storage.set(`project_${currentProjectId}_chapters`, chapters);
-        await storage.set(`project_${currentProjectId}_characters`, characters);
-        await storage.set(`project_${currentProjectId}_settingCategories`, settingCategories);
-        await storage.set(`project_${currentProjectId}_settingItems`, settingItems);
-        await storage.set(`project_${currentProjectId}_foreshadows`, foreshadows);
-        await storage.set(`project_${currentProjectId}_materials`, materials);
         // 增量 Diff 编码后再持久化，降低 localStorage 体积
         const encodedVersions: Record<string, ReturnType<typeof encodeVersionsToDeltas>> = {};
         for (const [cid, vlist] of Object.entries(versions)) {
           encodedVersions[cid] = encodeVersionsToDeltas(vlist);
         }
-        await storage.set(`project_${currentProjectId}_versions`, encodedVersions);
+        // 批量写入：把 7 个 key 合并为 1 次 IPC（storage:writeBatch），
+        // 既减少 IPC 往返延迟（7×RTT → 1×RTT），又从根本上避免触发 storage:write 令牌桶限流。
+        // patchProjects 走单独的原子 IPC（read-modify-write mutex），不并入 batch
+        await storage.setMany({
+          [`project_${currentProjectId}_chapters`]: chapters,
+          [`project_${currentProjectId}_characters`]: characters,
+          [`project_${currentProjectId}_settingCategories`]: settingCategories,
+          [`project_${currentProjectId}_settingItems`]: settingItems,
+          [`project_${currentProjectId}_foreshadows`]: foreshadows,
+          [`project_${currentProjectId}_materials`]: materials,
+          [`project_${currentProjectId}_versions`]: encodedVersions,
+          [`project_${currentProjectId}_comments`]: comments,
+        });
         // 与 Electron 分支同理：重读最新 project 后合并 totalWords/updatedAt，
         // 避免陈旧 updatedProject 覆盖 await 期间的并发 updateProject 修改
         const latestProject = get().projects.find(p => p.id === currentProjectId);
@@ -510,6 +561,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       storage.remove(`project_${projectId}_foreshadows`),
       storage.remove(`project_${projectId}_materials`),
       storage.remove(`project_${projectId}_versions`),
+      storage.remove(`project_${projectId}_comments`),
     ]);
     // 关键：若 patchProjects 失败，磁盘仍保留该项目记录，重启后会"复活"。
     // 此处回滚内存状态，让用户感知删除失败并重试，避免内存与磁盘不一致

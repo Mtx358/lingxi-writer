@@ -47,14 +47,20 @@ function isSubtleCryptoAvailable(): boolean {
  * 获取或生成设备指纹：用于派生 AES-GCM 密钥。
  * - 首次访问用 crypto.randomUUID 生成 UUID 并存 localStorage
  * - 后续从 localStorage 读取（保证加密/解密用同一指纹，否则解密失败）
- * - randomUUID 缺失时用 Date.now + Math.random 兜底（极端环境，仅测试场景）
+ * - randomUUID 缺失时用 crypto.getRandomValues 生成加密强随机兜底（极端环境，仅测试场景），
+ *   不用 Math.random：该指纹派生 AES 密钥，可预测指纹 = 可预测密钥
  */
 function getDeviceFingerprint(): string {
   let fp = localStorage.getItem(DEVICE_FP_KEY);
   if (!fp) {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
       fp = crypto.randomUUID();
+    } else if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+      // crypto.randomUUID 不可用时（极旧环境），用 CSPRNG 生成 128 位随机数的十六进制
+      const bytes = crypto.getRandomValues(new Uint8Array(16));
+      fp = `fp-${Date.now()}-${Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')}`;
     } else {
+      // 真正无 crypto API 的环境（不应出现在 Electron/现代浏览器），退而求其次
       fp = `fp-${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
     }
     try { localStorage.setItem(DEVICE_FP_KEY, fp); } catch { /* localStorage 不可用时仅内存持有，下次再生成 */ }
@@ -173,6 +179,13 @@ export class LocalStorage implements StorageAPI {
       } else {
         toast.error('数据写入失败', `键 "${key}" 持久化失败：${getErrorMessage(e)}`);
       }
+    }
+  }
+
+  // 批量写入：localStorage 直接顺序 setItem，无 IPC 限流问题
+  async setMany(entries: Record<string, unknown>): Promise<void> {
+    for (const [key, value] of Object.entries(entries)) {
+      await this.set(key, value);
     }
   }
 

@@ -4,7 +4,7 @@
  * 此前所有状态与 action 签名集中在 1155 行的 useAppStore.ts 中。现按领域拆分为
  * 多个 slice（见 ./slices/），各 slice 通过 StateCreator<AppState> 访问完整状态。
  */
-import type { Project, Chapter, Character, SettingCategory, SettingItem, Foreshadow, Material, ChapterVersion, ConflictIssue, AISuggestion, ChapterAnalysis, AISettings, ChapterLevelType, OutlinePolishReport, OutlineSnapshot, OutlineExpansionOption, CoreDriver, ConflictLayer, StructureVariant, CausalImpactReport, ChapterBeat, AppPreferences, ProjectSettingCard, BlueprintOverview, Subplot, UpdateSchedule, SensitiveWordCheckResult } from '@/types';
+import type { Project, Chapter, Character, SettingCategory, SettingItem, Foreshadow, Material, ChapterVersion, ConflictIssue, AISuggestion, ChapterAnalysis, AISettings, ChapterLevelType, OutlinePolishReport, OutlineSnapshot, OutlineExpansionOption, CoreDriver, ConflictLayer, ConflictLayerType, StructureVariant, CausalImpactReport, ChapterBeat, AppPreferences, ProjectSettingCard, BlueprintOverview, Subplot, UpdateSchedule, SensitiveWordCheckResult, InspirationCard, InspirationCardType, StoryLink, MaterialQuestion, Storyline, StorylineType, TimelineNode, IntersectionTarget, MultiLineConflict, PacingPressureReport, PacingPressurePoint, ForeshadowBoardItem, VersionDiffReport, CharacterArcIssue, RelationshipTemperatureCurve, ReaderEmpathyReport, SandboxTrialReport, SandboxTrialSnapshot, PolishLogEntry, ChapterComment, OutlineBranch, BranchDiffReport, ReviewReflowEntry, InspirationGap, UndoEntry, SkeletonTimelineEvent, PacingPreset, ForeshadowPayoffCheck, EmergencyRecoveryPlan, CharacterArcCurve, CharacterArcRemedyPlan, CharacterEmotionConsistencyReport, PacingAdjustmentAdvice } from '@/types';
 
 export interface ChapterHistory {
   past: string[];
@@ -158,6 +158,14 @@ export interface AppState {
   canUndo: (chapterId: string) => boolean;
   canRedo: (chapterId: string) => boolean;
 
+  // ===== 章节批注域 =====
+  /** 批注按章节 ID 分组存储 */
+  comments: Record<string, ChapterComment[]>;
+  addComment: (chapterId: string, content: string, type?: ChapterComment['type'], anchorText?: string) => void;
+  updateComment: (commentId: string, updates: Partial<Pick<ChapterComment, 'content' | 'type' | 'resolved'>>) => void;
+  deleteComment: (commentId: string) => void;
+  getComments: (chapterId: string) => ChapterComment[];
+
   // ===== UI / 搜索 / 冲突 / AI / 恢复域 =====
   leftPanelCollapsed: boolean;
   rightPanelCollapsed: boolean;
@@ -246,6 +254,8 @@ export interface AppState {
   unlockCoreDriver: () => void;
   /** 拉取冲突罗盘（基于核心驱动 + 角色） */
   fetchConflictCompass: () => Promise<void>;
+  /** 拖拽调整某层冲突权重（0-100），加重时自动生成对应情节种子追加到该层 seeds */
+  updateConflictWeight: (layer: ConflictLayerType, weight: number) => void;
   /** 拉取 3 套结构变体 */
   fetchStructureVariants: () => Promise<void>;
   /** 为指定章节生成 5 大节拍（写入 chapter.beats） */
@@ -258,6 +268,77 @@ export interface AppState {
   runCausalPreview: (changeDescription: string, targetId: string) => Promise<void>;
   /** 清空因果推演报告 */
   clearCausalImpact: () => void;
+
+  /** 最近一次节奏压力测试报告 */
+  lastPacingReport: PacingPressureReport | null;
+  /** 最近一次人物弧光校验问题 */
+  lastArcIssues: CharacterArcIssue[];
+  /** 最近一次两人关系温度曲线 */
+  lastRelationshipCurve: RelationshipTemperatureCurve | null;
+
+  /** 执行节奏压力测试，结果写入 lastPacingReport */
+  runPacingPressureTest: (scope?: 'all' | string) => Promise<void>;
+  /** 手动调校某章节奏能量值（external/emotional/isBuffer），total 自动重算 */
+  updatePacingPoint: (chapterId: string, updates: Partial<Pick<PacingPressurePoint, 'external' | 'emotional' | 'isBuffer'>>) => void;
+  /** 重置某章节奏值为 0（需重新运行检测恢复 AI 原始值） */
+  resetPacingPoint: (chapterId: string) => void;
+  /** 获取伏笔看板数据（按 pending/paidoff/overdue 分组） */
+  getForeshadowBoardItems: () => ForeshadowBoardItem[];
+  /** 伏笔回收合理性检测结果（按 foreshadowId 索引，规格书阶段4-4） */
+  foreshadowPayoffChecks: ForeshadowPayoffCheck[];
+  /** 逾期伏笔应急回收方案（按 foreshadowId 索引，规格书阶段4-4） */
+  emergencyRecoveryPlans: EmergencyRecoveryPlan[];
+  /** 运行伏笔回收合理性检测（仅检测 paid-off 伏笔），结果写入 foreshadowPayoffChecks */
+  runForeshadowPayoffCheck: () => Promise<void>;
+  /** 为指定逾期伏笔生成应急回收方案，结果写入 emergencyRecoveryPlans */
+  generateRecoveryPlan: (foreshadowId: string) => Promise<void>;
+  /** 清空伏笔检测与应急方案（项目切换/手动重置时） */
+  clearForeshadowChecks: () => void;
+  /** 对比两个大纲快照，返回差异报告 */
+  compareSnapshots: (oldSnapshotId: string, newSnapshotId: string) => VersionDiffReport | null;
+  /** 执行人物弧光校验，结果写入 lastArcIssues */
+  runCharacterArcCheck: () => Promise<void>;
+  /** 分析两人关系温度曲线，结果写入 lastRelationshipCurve */
+  analyzeRelationship: (characterAId: string, characterBId: string) => Promise<void>;
+
+  /** 最近一次读者共情校验报告 */
+  lastReaderEmpathyReport: ReaderEmpathyReport | null;
+  /** 执行读者共情校验（逐章动机/情感/利益三维 + 共情问题），结果写入 lastReaderEmpathyReport */
+  runReaderEmpathyCheck: (scope?: 'all' | string) => Promise<void>;
+
+  /** 人物弧光三维追踪曲线（情绪/能力/认知，规格书阶段4-3） */
+  lastArcCurves: CharacterArcCurve[];
+  /** 弧光异常补救方案（预留，默认空数组，规格书阶段4-3） */
+  lastArcRemedyPlans: CharacterArcRemedyPlan[];
+  /** 角色维度情感一致性报告（规格书阶段4-5） */
+  lastCharacterEmotionReport: CharacterEmotionConsistencyReport | null;
+  /** 节奏调校 AI 建议（拖拽曲线后产出落地操作建议，规格书阶段4-2） */
+  lastPacingAdvice: PacingAdjustmentAdvice | null;
+  /** 执行角色维度情感一致性校验，结果写入 lastCharacterEmotionReport */
+  runCharacterEmotionConsistencyCheck: () => Promise<void>;
+  /** 请求节奏调校 AI 建议：根据 chapterId 找到章节后调用 generatePacingAdjustmentAdvice */
+  requestPacingAdvice: (chapterId: string, dimension: 'external' | 'emotional', direction: 'raise' | 'lower', delta: number) => Promise<void>;
+  /** 应用节奏调校建议：清空 lastPacingAdvice 并记录打磨动作（recordPolishAction('pacing')） */
+  applyPacingAdvice: () => void;
+  /** 清空节奏调校建议 */
+  clearPacingAdvice: () => void;
+
+  /** 沙盒试运行基线快照（修改前诊断快照，用于验证闭环对比） */
+  sandboxBaseline: SandboxTrialSnapshot | null;
+  /** 沙盒试运行基线大纲副本（深拷贝 chapters/foreshadows，用于不满意时回退到修改前） */
+  sandboxBaselineChapters: Chapter[] | null;
+  /** 沙盒试运行基线伏笔副本 */
+  sandboxBaselineForeshadows: Foreshadow[] | null;
+  /** 最近一次沙盒试运行前后对比报告 */
+  lastSandboxReport: SandboxTrialReport | null;
+  /** 捕获当前诊断报告为沙盒试运行基线（修改前快照 + 大纲副本） */
+  captureSandboxBaseline: () => void;
+  /** 清空沙盒试运行基线 */
+  clearSandboxBaseline: () => void;
+  /** 回退到沙盒基线：用基线副本覆盖当前 chapters/foreshadows（不满意修改时使用） */
+  restoreSandboxBaseline: () => void;
+  /** 运行沙盒验证：重新诊断并对基线做前后对比，结果写入 lastSandboxReport */
+  runSandboxVerification: (scope?: 'all' | string) => Promise<void>;
 
   // ===== 灵犀设定域（1.1 核心设定卡） =====
   /** 是否正在执行设定卡 AI 操作（提问/矛盾检查） */
@@ -322,4 +403,142 @@ export interface AppState {
   runSensitiveWordCheck: (chapterIds?: string[]) => SensitiveWordCheckResult;
   /** 清空敏感词检查结果 */
   clearSensitiveWordCheck: () => void;
+
+  // ===== 打磨日志域（3.4 打磨成果摘要） =====
+  /**
+   * 打磨日志条目：每次打磨会话结束自动生成一条，持久化到项目数据。
+   * 用于追溯成长轨迹，回答"我上次改了什么"。
+   */
+  polishLog: PolishLogEntry[];
+  /** 当前打磨会话的动作计数器（内存态，退出时汇总成日志条目） */
+  polishSessionActions: {
+    foreshadowsResolved: number;
+    pacingAdjusted: number;
+    arcFixed: number;
+    newInspirations: number;
+    snapshotsCreated: number;
+    startedAt: number;
+  };
+  /** 记录一次打磨动作（递增对应计数器） */
+  recordPolishAction: (type: 'foreshadow' | 'pacing' | 'arc' | 'inspiration' | 'snapshot') => void;
+  /** 结束当前打磨会话，生成日志条目并持久化 */
+  finishPolishSession: () => void;
+  /** 清空打磨日志（项目级） */
+  clearPolishLog: () => void;
+
+  // ===== 灵感打磨域（规格书第一阶段） =====
+  /** 灵感卡列表（碎片捕获面板的存储单元） */
+  inspirationCards: InspirationCard[];
+  /** 连线沙盘：卡片之间的叙事脉络 */
+  storyLinks: StoryLink[];
+  /** 是否正在执行灵感卡 AI 操作（深度提问） */
+  isInspirationBusy: boolean;
+  /** 添加灵感卡；无当前项目时 toast 并返回空对象 */
+  addInspirationCard: (input: { type: InspirationCardType; title: string; content: string; relatedChapterId?: string }) => InspirationCard;
+  /** 更新灵感卡字段 */
+  updateInspirationCard: (cardId: string, updates: Partial<InspirationCard>) => void;
+  /** 删除灵感卡及其子卡，同时清理关联的 storyLinks */
+  deleteInspirationCard: (cardId: string) => void;
+  /** 对灵感卡深度提问，返回问题列表 */
+  askInspirationCard: (cardId: string) => Promise<MaterialQuestion[]>;
+  /** 为深度提问的答案生成子卡片，挂到主卡并更新 childCount */
+  addInspirationChildCard: (parentId: string, dimension: string, question: string, answer: string) => InspirationCard | null;
+  /** 调用 AI 生成两张卡之间的叙事脉络，写入 storyLinks */
+  createStoryLink: (sourceCardId: string, targetCardId: string) => Promise<StoryLink | null>;
+  /** 删除一条叙事脉络 */
+  deleteStoryLink: (linkId: string) => void;
+  /** 获取章节关联的灵感卡（relatedChapterId === chapterId） */
+  getRelatedInspirationCards: (chapterId: string) => InspirationCard[];
+
+  // ===== 多线作战指挥台（规格书第三阶段） =====
+  /** 故事线列表（主线/反派线/支线） */
+  storylines: Storyline[];
+  /** 交集点预警目标列表 */
+  intersectionTargets: IntersectionTarget[];
+  /** 新增故事线；无当前项目时返回 null，颜色按 type 默认 */
+  addStoryline: (input: { type: StorylineType; name: string; color?: string }) => Storyline | null;
+  /** 更新故事线字段 */
+  updateStoryline: (storylineId: string, updates: Partial<Storyline>) => void;
+  /** 删除故事线，并从交集目标中移除引用（变空则删目标） */
+  deleteStoryline: (storylineId: string) => void;
+  /** 为故事线添加章节级时间轴节点 */
+  addTimelineNode: (storylineId: string, chapterId: string) => TimelineNode | null;
+  /** 移除时间轴节点 */
+  removeTimelineNode: (storylineId: string, nodeId: string) => void;
+  /** 新增交集点预警目标 */
+  addIntersectionTarget: (input: { chapterId: string; description: string; storylineIds: string[] }) => IntersectionTarget | null;
+  /** 删除交集点预警目标 */
+  deleteIntersectionTarget: (targetId: string) => void;
+  /** 交集点预警：按"交集前 3 章"节点数判定 ok / warning / danger */
+  checkIntersection: (targetId: string) => void;
+  /** 多线错位自动巡检结果（时间矛盾/行程冲突/节点真空/顺序倒置） */
+  multiLineConflicts: MultiLineConflict[];
+  /** 自动巡检所有线索的时间矛盾与行程冲突，结果写入 multiLineConflicts */
+  detectMultiLineConflicts: () => void;
+  /** 拖拽对齐：把某节点移动到新章节位置（节点拖拽对齐） */
+  moveTimelineNode: (storylineId: string, nodeId: string, targetChapterId: string) => void;
+
+  // ===== 版本花园域（规格书第五阶段-4：多分支并行试错）=====
+  /** 创作分支列表 */
+  branches: OutlineBranch[];
+  /** 从指定快照分叉出独立分支；无当前项目或快照不存在时返回 null */
+  createBranch: (sourceSnapshotId: string, name: string) => OutlineBranch | null;
+  /** 更新分支字段（name/notes/chapters 等） */
+  updateBranch: (branchId: string, updates: Partial<OutlineBranch>) => void;
+  /** 删除分支 */
+  deleteBranch: (branchId: string) => void;
+  /** 归档分支（status=archived，不再可编辑/合并） */
+  archiveBranch: (branchId: string) => void;
+  /** 合并分支结构回主干（仅结构字段，不覆盖正文）；成功返回 true */
+  mergeBranchToMain: (branchId: string) => boolean;
+  /** 对比分支与主干的章节差异 + 关键指标 */
+  compareBranchWithMain: (branchId: string) => BranchDiffReport | null;
+
+  // ===== 读者评论回流域（规格书 3.3）=====
+  /** 读者评论回流记录列表 */
+  reviewReflows: ReviewReflowEntry[];
+  /** 新增一条读者评论回流记录（已 AI 归类） */
+  addReviewReflow: (entry: Omit<ReviewReflowEntry, 'id' | 'projectId' | 'createdAt' | 'resolved'>) => ReviewReflowEntry | null;
+  /** 标记回流记录为已处理 */
+  resolveReviewReflow: (entryId: string) => void;
+  /** 删除回流记录 */
+  deleteReviewReflow: (entryId: string) => void;
+
+  // ===== 灵感缺口提示域（规格书阶段1-3）=====
+  /** 当前项目的灵感缺口列表（AI 推断，可忽略） */
+  inspirationGaps: InspirationGap[];
+  /** 设置灵感缺口列表（AI 推断后整体替换） */
+  setInspirationGaps: (gaps: InspirationGap[]) => void;
+  /** 追加单条缺口（编辑器写作时触发回流到打磨台汇总，规格书 3.2/阶段1-3，去重追加） */
+  addInspirationGap: (gap: Omit<InspirationGap, 'id' | 'ignored'>) => void;
+  /** 忽略某条缺口 */
+  ignoreInspirationGap: (gapId: string) => void;
+
+  // ===== 全局撤销栈域（规格书 3.5 Ctrl+Z）=====
+  /** 撤销栈（最近的操作在前，上限 30 条） */
+  undoStack: UndoEntry[];
+  /** 压入一条撤销记录 */
+  pushUndo: (entry: Omit<UndoEntry, 'id' | 'timestamp'>) => void;
+  /** 执行撤销：弹出栈顶并调用 undo，返回被撤销操作的描述（无则 null） */
+  performUndo: () => string | null;
+  /** 清空撤销栈 */
+  clearUndoStack: () => void;
+
+  // ===== 编辑器→打磨台自动复检域（规格书 3.2）=====
+  /** 编辑器正文保存后置 true，打磨台挂载/监听时据此自动复检，复检后置 false */
+  polishRecheckNeeded: boolean;
+  /** 标记打磨台需要复检（编辑器保存正文时调用） */
+  markPolishRecheckNeeded: () => void;
+  /** 清除复检标记（打磨台完成复检后调用） */
+  clearPolishRecheckNeeded: () => void;
+
+  // ===== 骨架可交互结构时间轴域（规格书阶段2-1）=====
+  /** 时间轴关键事件节点 */
+  skeletonEvents: SkeletonTimelineEvent[];
+  /** 节奏预设列表 */
+  pacingPresets: PacingPreset[];
+  /** 设置时间轴事件列表（拖拽/标高潮后整体替换） */
+  setSkeletonEvents: (events: SkeletonTimelineEvent[]) => void;
+  /** 设置节奏预设列表 */
+  setPacingPresets: (presets: PacingPreset[]) => void;
 }

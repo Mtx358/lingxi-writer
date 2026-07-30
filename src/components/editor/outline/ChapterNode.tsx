@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, memo } from 'react';
+import { useState, useRef, useEffect, memo, useMemo } from 'react';
 import {
   ChevronRight,
   ChevronDown,
@@ -158,7 +158,11 @@ function ChapterNodeComponent({
     setShowAddMenu(false);
   };
 
-  const totalWords = hasChildren ? children.reduce((sum, c) => sum + c.wordCount, 0) + chapter.wordCount : chapter.wordCount;
+  // useMemo 收敛子节点字数累加：ChapterNode 经 memo 包裹，但 children 数组变化时仍需重算
+  const totalWords = useMemo(
+    () => hasChildren ? children.reduce((sum, c) => sum + c.wordCount, 0) + chapter.wordCount : chapter.wordCount,
+    [hasChildren, children, chapter.wordCount],
+  );
 
   const handleStatusChange = (status: Chapter['status']) => {
     updateChapter(chapter.id, { status });
@@ -211,15 +215,33 @@ function ChapterNodeComponent({
           zIndex: isSortableDragging ? 100 : undefined,
           boxShadow: isSortableDragging ? '0 4px 20px rgba(0,0,0,0.4)' : undefined,
         }}
-        className={`group flex items-center gap-1.5 py-1.5 px-2 mx-1 rounded cursor-pointer transition-colors relative ${
+        className={`group flex items-center gap-1.5 py-1.5 px-2 mx-1 rounded cursor-pointer transition-colors relative focus:outline-none focus:ring-1 focus:ring-amber-400/50 ${
           isMultiSelected
             ? 'bg-amber-400/20 border-l-2 border-amber-400'
             : isSelected
             ? 'bg-amber-400/15 border-l-2 border-amber-400'
             : 'hover:bg-ink-800/50'
         }`}
+        role="button"
+        tabIndex={0}
+        aria-label={`章节：${chapter.title}，共 ${chapter.wordCount} 字`}
+        aria-current={isSelected ? 'true' : undefined}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            // onSelect 读取 e.shiftKey/ctrlKey/metaKey 做多选判断；
+            // KeyboardEvent 同样有这些修饰键属性，构造最小事件对象传入避免类型谎言
+            onSelect(chapter, {
+              shiftKey: e.shiftKey,
+              ctrlKey: e.ctrlKey,
+              metaKey: e.metaKey,
+              stopPropagation: () => {},
+              preventDefault: () => {},
+            } as unknown as React.MouseEvent);
+          }
+        }}
       >
         <button
           {...attributes}

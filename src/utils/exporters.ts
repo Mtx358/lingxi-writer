@@ -525,9 +525,8 @@ function sanitizeForWinAnsi(text: string, font: PDFFont): string {
  */
 export async function generatePdf(data: ExportData): Promise<PdfExportResult> {
   const { project, chapters, includeToc, onProgress } = data;
-  // 动态加载 pdf-lib 与 fontkit：仅在实际导出 PDF 时拉取，避免进入主 bundle
+  // 动态加载 pdf-lib：仅在实际导出 PDF 时拉取，避免进入主 bundle
   const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
-  const fontkit = (await import('@pdf-lib/fontkit')).default;
 
   callProgressSafely(onProgress, { current: 0, total: chapters.length, stage: 'preparing' });
   const pdfDoc = await PDFDocument.create();
@@ -541,6 +540,11 @@ export async function generatePdf(data: ExportData): Promise<PdfExportResult> {
   const fontBytes = await loadChineseFont();
   if (fontBytes) {
     try {
+      // fontkit（919KB）仅在中文字体确实可用时才动态加载：
+      // vite.config 的 manualChunks 已把 @pdf-lib/fontkit 拆为独立 chunk，
+      // 此前在函数顶部无条件 import 会导致 Helvetica 降级路径也白白拉取 451KB gzip。
+      // 移到 if 块内后，字体加载失败/离线首启时不再请求该 chunk。
+      const fontkit = (await import('@pdf-lib/fontkit')).default;
       // pdf-lib 的 embedFont 对自定义 TTF/OTF 字体需要 fontkit 实例来解析字形表，
       // 否则 embedFont 会抛 "Cannot embed a non-standard font without fontkit" 错误，
       // 导致中文字体永远加载失败、PDF 中文显示为方块。注册 fontkit 后即可正常嵌入。

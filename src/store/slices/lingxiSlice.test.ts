@@ -35,6 +35,7 @@ const { mockStorage, toastMock } = vi.hoisted(() => {
   const mockStorage = {
     get: vi.fn(async <T>(_key: string, defaultValue: T): Promise<T> => defaultValue),
     set: vi.fn(async () => undefined),
+    setMany: vi.fn(async () => undefined),
     remove: vi.fn(async () => undefined),
     patchProjects: vi.fn(async () => null),
     saveRecoveryDraft: vi.fn().mockResolvedValue(undefined),

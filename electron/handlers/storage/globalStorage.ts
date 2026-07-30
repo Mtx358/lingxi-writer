@@ -153,6 +153,58 @@ export function registerGlobalStorageHandlers(): void {
     }
   });
 
+  // 批量写入：一次 IPC 调用写入多个 key，把 8 次 storage:write 合并成 1 次，
+  // 既减少 IPC 往返延迟，又从根本上避免触发 storage:write 的令牌桶限流。
+  // 入参格式：Record<key, value>，返回 Record<key, boolean> 标识每个 key 的写入结果
+  safeIpcHandle('storage:writeBatch', async (_event, entries: Record<string, unknown>) => {
+    try {
+      if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
+        logger.audit('security.input', 'storage:writeBatch rejected: invalid entries');
+        return {};
+      }
+      const results: Record<string, boolean> = {};
+      // 串行写入：避免并发写入同一目录的 tmp 文件互相干扰
+      for (const [key, value] of Object.entries(entries)) {
+        if (!isValidStorageKey(key)) {
+          logger.audit('security.input', 'storage:writeBatch rejected: invalid key', { key });
+          results[key] = false;
+          continue;
+        }
+        const serialized = JSON.stringify(value);
+        if (serialized.length > MAX_STORAGE_VALUE_SIZE) {
+          logger.audit('security.size', 'storage:writeBatch rejected: value too large', {
+            key,
+            size: serialized.length,
+          });
+          results[key] = false;
+          continue;
+        }
+        const filePath = resolveFilePath(key);
+        try {
+          const ok = await withWriteMutex(filePath, async () => {
+            await ensureDir(filePath);
+            const tmp = `${filePath}.${randomUUID()}.tmp`;
+            try {
+              await fs.writeFile(tmp, serialized, 'utf-8');
+              await fs.rename(tmp, filePath);
+              return true;
+            } finally {
+              await fs.unlink(tmp).catch(() => {});
+            }
+          });
+          results[key] = ok;
+        } catch (e) {
+          logger.error('storage:writeBatch item error', e instanceof Error ? e : { error: String(e), key });
+          results[key] = false;
+        }
+      }
+      return results;
+    } catch (e) {
+      logger.error('storage:writeBatch error', e instanceof Error ? e : { error: String(e) });
+      return {};
+    }
+  });
+
   safeIpcHandle('storage:remove', async (_event, key: string) => {
     try {
       // aiSettings 不再走 READ_ONLY 路径：重置改由专用 IPC 处理

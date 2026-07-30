@@ -226,7 +226,7 @@ describe('ai:proxyStream handler 注册层', () => {
     it('params 非对象时抛错（null/undefined/字符串/数字）', async () => {
       const event = makeEvent();
       for (const bad of [null, undefined, 'string', 123]) {
-        await expect(callHandler('ai:proxyStream', event, bad)).rejects.toThrow(/params must be/);
+        await expect(callHandler('ai:proxyStream', event, bad)).rejects.toThrow(/操作失败，请重试/);
       }
       expect(hoisted.loggerMock.audit).toHaveBeenCalledWith(
         'security.input', 'ai:proxyStream rejected: invalid params',
@@ -237,7 +237,7 @@ describe('ai:proxyStream handler 注册层', () => {
     it('provider 不在白名单时抛错', async () => {
       const event = makeEvent();
       await expect(callHandler('ai:proxyStream', event, makeProxyStreamParams({ provider: 'claude' })))
-        .rejects.toThrow(/invalid provider/);
+        .rejects.toThrow(/操作失败，请重试/);
       expect(hoisted.loggerMock.audit).toHaveBeenCalledWith(
         'security.input', 'ai:proxyStream rejected: invalid params',
         expect.objectContaining({ error: expect.stringMatching(/invalid provider/) }),
@@ -247,27 +247,27 @@ describe('ai:proxyStream handler 注册层', () => {
     it('messages 空数组时抛错', async () => {
       const event = makeEvent();
       await expect(callHandler('ai:proxyStream', event, makeProxyStreamParams({ messages: [] })))
-        .rejects.toThrow(/messages must be/);
+        .rejects.toThrow(/操作失败，请重试/);
     });
 
     it('temperature 超出 [0,2] 范围时抛错', async () => {
       const event = makeEvent();
       await expect(callHandler('ai:proxyStream', event, makeProxyStreamParams({ temperature: 3 })))
-        .rejects.toThrow(/invalid temperature/);
+        .rejects.toThrow(/操作失败，请重试/);
     });
 
     it('maxTokens 非整数时抛错', async () => {
       const event = makeEvent();
       await expect(callHandler('ai:proxyStream', event, makeProxyStreamParams({ maxTokens: 1.5 })))
-        .rejects.toThrow(/invalid maxTokens/);
+        .rejects.toThrow(/操作失败，请重试/);
     });
 
     it('requestId 含特殊字符时抛错（防 channel 名污染）', async () => {
       const event = makeEvent();
       await expect(callHandler('ai:proxyStream', event, makeProxyStreamParams({ requestId: 'has space' })))
-        .rejects.toThrow(/invalid requestId/);
+        .rejects.toThrow(/操作失败，请重试/);
       await expect(callHandler('ai:proxyStream', event, makeProxyStreamParams({ requestId: 'has.dot' })))
-        .rejects.toThrow(/invalid requestId/);
+        .rejects.toThrow(/操作失败，请重试/);
     });
   });
 
@@ -277,7 +277,7 @@ describe('ai:proxyStream handler 注册层', () => {
       await expect(callHandler('ai:proxyStream', event, makeProxyStreamParams({
         provider: 'openai',
         baseUrl: 'http://evil.com',
-      }))).rejects.toThrow('AI baseUrl 不在允许列表内');
+      }))).rejects.toThrow(/操作失败，请重试/);
       // 审计日志应记录 ssrf 类别
       expect(hoisted.loggerMock.audit).toHaveBeenCalledWith(
         'security.ssrf', 'ai:proxyStream rejected: disallowed baseUrl',
@@ -292,7 +292,7 @@ describe('ai:proxyStream handler 注册层', () => {
       await expect(callHandler('ai:proxyStream', event, makeProxyStreamParams({
         provider: 'openai',
         baseUrl: 'http://127.0.0.1:8080',
-      }))).rejects.toThrow('AI baseUrl 不在允许列表内');
+      }))).rejects.toThrow(/操作失败，请重试/);
     });
 
     it('local provider + https 协议被拒绝（local 必须 http+loopback）', async () => {
@@ -300,7 +300,7 @@ describe('ai:proxyStream handler 注册层', () => {
       await expect(callHandler('ai:proxyStream', event, makeProxyStreamParams({
         provider: 'local',
         baseUrl: 'https://localhost:11434',
-      }))).rejects.toThrow('AI baseUrl 不在允许列表内');
+      }))).rejects.toThrow(/操作失败，请重试/);
     });
   });
 
@@ -350,7 +350,7 @@ describe('ai:proxyStream handler 注册层', () => {
       vi.stubGlobal('fetch', vi.fn().mockRejectedValue(fetchErr));
 
       await expect(callHandler('ai:proxyStream', event, makeProxyStreamParams({ provider: 'openai' })))
-        .rejects.toThrow('network down');
+        .rejects.toThrow(/操作失败，请重试/);
 
       expect(event.sender.send).toHaveBeenCalledWith('ai:stream:error:ai-12345-abc', 'network down');
       // 失败日志不记录 messages/content/apiKey
@@ -368,7 +368,7 @@ describe('ai:proxyStream handler 注册层', () => {
       })));
 
       await expect(callHandler('ai:proxyStream', event, makeProxyStreamParams({ provider: 'openai' })))
-        .rejects.toThrow(/HTTP 500: upstream error/);
+        .rejects.toThrow(/操作失败，请重试/);
 
       expect(event.sender.send).toHaveBeenCalledWith(
         'ai:stream:error:ai-12345-abc',
@@ -387,19 +387,19 @@ describe('ai:proxyLLM handler 注册层', () => {
   describe('参数校验', () => {
     it('params 非对象时抛错', async () => {
       const event = makeEvent();
-      await expect(callHandler('ai:proxyLLM', event, null)).rejects.toThrow(/params must be/);
+      await expect(callHandler('ai:proxyLLM', event, null)).rejects.toThrow(/操作失败，请重试/);
     });
 
     it('prompt 为空字符串时抛错', async () => {
       const event = makeEvent();
       await expect(callHandler('ai:proxyLLM', event, makeProxyLLMParams({ prompt: '' })))
-        .rejects.toThrow(/non-empty string/);
+        .rejects.toThrow(/操作失败，请重试/);
     });
 
     it('provider 非法时抛错', async () => {
       const event = makeEvent();
       await expect(callHandler('ai:proxyLLM', event, makeProxyLLMParams({ provider: 'claude' })))
-        .rejects.toThrow(/invalid provider/);
+        .rejects.toThrow(/操作失败，请重试/);
     });
   });
 
@@ -408,7 +408,7 @@ describe('ai:proxyLLM handler 注册层', () => {
       const event = makeEvent();
       await expect(callHandler('ai:proxyLLM', event, makeProxyLLMParams({
         baseUrl: 'http://evil.com',
-      }))).rejects.toThrow('AI baseUrl 不在允许列表内');
+      }))).rejects.toThrow(/操作失败，请重试/);
     });
   });
 

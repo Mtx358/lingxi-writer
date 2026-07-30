@@ -20,6 +20,8 @@ import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import path from 'node:path';
 
 const hoisted = vi.hoisted(() => {
+  const _path = require('node:path');
+  const _os = require('node:os');
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const fsMock = {
     readFile: vi.fn(),
@@ -44,8 +46,9 @@ const hoisted = vi.hoisted(() => {
     write: vi.fn(),
   };
   return {
-    TEST_USERDATA: '/tmp/lingxi-test-userdata-exportFile-handler',
-    TEST_HOME: '/tmp/lingxi-test-home-exportFile-handler',
+    TEST_USERDATA: _path.join(_os.tmpdir(), 'lingxi-test-userdata-exportFile-handler'),
+    TEST_HOME: _path.join(_os.tmpdir(), 'lingxi-test-home-exportFile-handler'),
+    tmpdir: _os.tmpdir(),
     handlers,
     fsMock,
     loggerMock,
@@ -60,7 +63,7 @@ vi.mock('electron', () => ({
       if (name === 'documents') return path.join(hoisted.TEST_HOME, 'Documents');
       if (name === 'desktop') return path.join(hoisted.TEST_HOME, 'Desktop');
       if (name === 'downloads') return path.join(hoisted.TEST_HOME, 'Downloads');
-      return '/tmp';
+      return hoisted.tmpdir;
     }),
   },
   ipcMain: {
