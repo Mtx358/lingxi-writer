@@ -64,3 +64,6 @@ LingxiWriter-source.zip
 /EditorPage-*.js
 /ExportPage-*.js
 /*.zip
+
+# 修复补丁导出目录（构建产物，不属于源码）
+polish-fix-export/

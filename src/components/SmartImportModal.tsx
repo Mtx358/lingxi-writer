@@ -17,13 +17,13 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import {
   X, Upload, ClipboardPaste, FileText, AlertCircle, Check, File,
   Sparkles, ChevronRight, Loader2, Merge, RefreshCw, Plus, BookOpen,
-  Users, Settings as SettingsIcon, GitBranch, AlertTriangle, Info,
+  Users, GitBranch, AlertTriangle, Info,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/store/useAppStore';
 import { useFocusTrap } from '@/hooks/useFocusTrap';
 import { parseMarkdown, parsePlainText, parseDocx } from '@/utils/importUtils';
-import type { ImportResult, ImportedChapter, HeadingMapping } from '@/utils/importUtils';
+import type { ImportResult, ImportedChapter } from '@/utils/importUtils';
 import { parseOutline } from '@/utils/outlineParser';
 import type { ParsedOutline } from '@/utils/outlineParser';
 import {
@@ -36,11 +36,9 @@ import {
   computeModifiedChapters,
   type ContentForm,
   type ImportFingerprint,
-  type ProjectMatch,
   type ImportAction,
 } from '@/utils/importDetector';
 import type { Chapter, ChapterLevelType, Character } from '@/types';
-import { CHARACTER_ROLE_LABELS } from '@/types';
 
 // 文件大小上限 20 MB（与原 ImportModal 一致）
 const MAX_IMPORT_SIZE = 20 * 1024 * 1024;
@@ -101,19 +99,18 @@ export default function SmartImportModal({ onClose }: SmartImportModalProps) {
 
   // 输入相关状态
   const [dragOver, setDragOver] = useState(false);
-  const [fileName, setFileName] = useState('');
+  const [, setFileName] = useState('');
   const [rawText, setRawText] = useState('');          // 文本类输入的原始内容
-  const [docxUrl, setDocxUrl] = useState('');           // docx 的 object URL
+  const [, setDocxUrl] = useState('');           // docx 的 object URL
   const [inputMode, setInputMode] = useState<'file' | 'paste'>('file');
 
   // 解析与决策相关状态
   const [step, setStep] = useState<Step>('input');
   const [unified, setUnified] = useState<UnifiedImportResult | null>(null);
-  const [importFp, setImportFp] = useState<ImportFingerprint | null>(null);
+  const [, setImportFp] = useState<ImportFingerprint | null>(null);
   const [decision, setDecision] = useState<ImportAction | null>(null);
   const [execMode, setExecMode] = useState<ExecMode | null>(null);
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState<'volumes' | 'characters' | 'settings' | 'foreshadows' | 'chapters'>('chapters');
 
   useEffect(() => {
     isMountedRef.current = true;
