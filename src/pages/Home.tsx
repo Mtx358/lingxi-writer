@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useId, lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, FolderOpen, Sparkles, BookOpen, Layers, Map, Trash2, Clock, FileText, Upload, FileSearch } from 'lucide-react';
+import { Plus, FolderOpen, Sparkles, BookOpen, Layers, Map, Trash2, Clock, FileText, Upload } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { PROJECT_TEMPLATES } from '@/constants/mockData';
 import { formatDate } from '@/utils/storage';
@@ -12,11 +12,10 @@ import type { Project } from '@/types';
 import OnboardingGuide from '@/components/OnboardingGuide';
 import { safeLocalStorageGet, safeLocalStorageSet } from '@/lib/safeStorage';
 
-// 导入弹窗懒加载：ImportModal 静态拉取 importUtils.ts（parseMarkdown/parseDocx + DOMPurify），
-// OutlineImportModal 静态拉取 outlineParser.ts（parseOutline + DOMPurify），两者合计近 900 行
-// 解析逻辑 + DOMPurify。仅在用户点击"导入"按钮时才需要，懒加载可显著降低首屏主入口 chunk 体积。
-const ImportModal = lazy(() => import('@/components/ImportModal'));
-const OutlineImportModal = lazy(() => import('@/components/OutlineImportModal'));
+// 智能导入弹窗懒加载：静态拉取 importDetector.ts + importUtils.ts + outlineParser.ts，
+// 合计近 1400 行解析逻辑 + DOMPurify。仅在用户点击"导入"按钮时才需要，
+// 懒加载可显著降低首屏主入口 chunk 体积。
+const SmartImportModal = lazy(() => import('@/components/SmartImportModal'));
 
 // 懒加载弹窗的统一占位：与 App.tsx 的 PageFallback 风格一致，避免空白闪烁
 function ModalFallback() {
@@ -36,8 +35,7 @@ export default function Home() {
   const loadSampleProject = useAppStore(s => s.loadSampleProject);
   const [showNewModal, setShowNewModal] = useState(false);
   const newModalRef = useFocusTrap<HTMLDivElement>(showNewModal);
-  const [showImportModal, setShowImportModal] = useState(false);
-  const [showOutlineModal, setShowOutlineModal] = useState(false);
+  const [showSmartImportModal, setShowSmartImportModal] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [newProjectTitle, setNewProjectTitle] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState<Project['template']>('blank');
@@ -117,18 +115,11 @@ export default function Home() {
           </div>
           <div className="flex gap-2">
             <button
-              onClick={() => setShowOutlineModal(true)}
-              className="btn btn-secondary"
-            >
-              <FileSearch className="w-4 h-4" />
-              导入大纲
-            </button>
-            <button
-              onClick={() => setShowImportModal(true)}
+              onClick={() => setShowSmartImportModal(true)}
               className="btn btn-secondary"
             >
               <Upload className="w-4 h-4" />
-              导入作品
+              智能导入
             </button>
             <button
               onClick={() => setShowNewModal(true)}
@@ -332,15 +323,9 @@ export default function Home() {
         </div>
       )}
 
-      {showImportModal && (
+      {showSmartImportModal && (
         <Suspense fallback={<ModalFallback />}>
-          <ImportModal onClose={() => setShowImportModal(false)} />
-        </Suspense>
-      )}
-
-      {showOutlineModal && (
-        <Suspense fallback={<ModalFallback />}>
-          <OutlineImportModal onClose={() => setShowOutlineModal(false)} />
+          <SmartImportModal onClose={() => setShowSmartImportModal(false)} />
         </Suspense>
       )}
 

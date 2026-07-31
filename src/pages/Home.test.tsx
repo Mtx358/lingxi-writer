@@ -29,19 +29,11 @@ vi.mock('react-router-dom', () => ({
   useNavigate: () => navigateMock,
 }));
 
-// 子组件 mock：避免拉入 ImportModal/OutlineImportModal/OnboardingGuide 的复杂依赖
-vi.mock('@/components/ImportModal', () => ({
+// 子组件 mock：避免拉入 SmartImportModal/OnboardingGuide 的复杂依赖
+vi.mock('@/components/SmartImportModal', () => ({
   default: ({ onClose }: { onClose: () => void }) => (
-    <div data-testid="import-modal">
-      <button onClick={onClose}>close-import</button>
-    </div>
-  ),
-}));
-
-vi.mock('@/components/OutlineImportModal', () => ({
-  default: ({ onClose }: { onClose: () => void }) => (
-    <div data-testid="outline-import-modal">
-      <button onClick={onClose}>close-outline</button>
+    <div data-testid="smart-import-modal">
+      <button onClick={onClose}>close-smart-import</button>
     </div>
   ),
 }));
@@ -282,20 +274,13 @@ describe('Home', () => {
   });
 
   // ============ 导入模态框 ============
-  // ImportModal/OutlineImportModal 在 Home.tsx 中为 lazy 加载（降低首屏主入口 chunk 体积），
+  // SmartImportModal 在 Home.tsx 中为 lazy 加载（降低首屏主入口 chunk 体积），
   // 点击后需 await findByTestId 等待 Suspense 解析完成，不能用同步 getByTestId
-  it('点击"导入作品"打开 ImportModal', async () => {
+  it('点击"智能导入"打开 SmartImportModal', async () => {
     mockStore({ projects: [] });
     render(<Home />);
-    fireEvent.click(screen.getByText('导入作品'));
-    expect(await screen.findByTestId('import-modal')).toBeInTheDocument();
-  });
-
-  it('点击"导入大纲"打开 OutlineImportModal', async () => {
-    mockStore({ projects: [] });
-    render(<Home />);
-    fireEvent.click(screen.getByText('导入大纲'));
-    expect(await screen.findByTestId('outline-import-modal')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('智能导入'));
+    expect(await screen.findByTestId('smart-import-modal')).toBeInTheDocument();
   });
 
   // ============ Onboarding ============
