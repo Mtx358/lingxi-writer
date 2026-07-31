@@ -182,6 +182,8 @@ export default function PolishPage() {
   const [statsExpanded, setStatsExpanded] = useState(false);
   // 大纲树视图展开的卷集合（id → bool）
   const [expandedVolumes, setExpandedVolumes] = useState<Record<string, boolean>>({});
+  // 卡片视图展开详情的章节集合（id → bool）：默认展开选中项，让用户进入即看到详细内容
+  const [expandedCards, setExpandedCards] = useState<Record<string, boolean>>({});
 
   // ===== 打磨位置持久化 + 异常恢复 =====
   // 离开/崩溃后再次进入打磨台，恢复到上次的模式与引导步骤，避免「找不回刚才改到哪」。
@@ -1126,8 +1128,12 @@ export default function PolishPage() {
                           index={idx}
                           issues={issuesByChapter.get(ch.id) ?? []}
                           selected={selectedChapterId === ch.id}
+                          expanded={expandedCards[ch.id] ?? selectedChapterId === ch.id}
+                          onToggleExpand={() => setExpandedCards(prev => ({ ...prev, [ch.id]: !(prev[ch.id] ?? selectedChapterId === ch.id) }))}
                           onSelect={() => handleSelectChapter(ch.id)}
                           onOpen={() => handleOpenChapterInEditor(ch.id)}
+                          characters={characters}
+                          foreshadows={foreshadows}
                         />
                       );
                     })}
@@ -1665,42 +1671,101 @@ function beatProgressText(ch: Chapter): string {
   return `${filledBeats}/${BEAT_TOTAL_SLOTS} 节拍`;
 }
 
-// ===== 中栏卡片视图：单行章节 =====
+// ===== 中栏卡片视图：可展开的单行章节 =====
+// 折叠态：与原版一致的单行摘要（层级+序号+标题+节拍+问题标记）
+// 展开态：下方追加详情区——摘要、节拍、关联角色/伏笔、问题清单、状态与字数
+// 交互：单击行=选中+切换展开；双击行=跳编辑器；箭头按钮=仅切换展开
 function ChapterCardRow({
   chapter,
   index,
   issues,
   selected,
+  expanded,
+  onToggleExpand,
   onSelect,
   onOpen,
+  characters,
+  foreshadows,
 }: {
   chapter: Chapter;
   index: number;
   issues: HealthIssue[];
   selected: boolean;
+  expanded: boolean;
+  onToggleExpand: () => void;
   onSelect: () => void;
   onOpen: () => void;
+  characters: Character[];
+  foreshadows: Foreshadow[];
 }) {
   const { bgClass, marks } = deriveChapterIssueMarks(issues);
   const levelLabel = LEVEL_TYPE_LABELS[chapter.levelType];
+
+  // 关联角色：characterFocus 数组按 ID/名称匹配
+  const relatedCharacters = useMemo(() => {
+    if (!chapter.characterFocus || chapter.characterFocus.length === 0) return [];
+    const ids = new Set(chapter.characterFocus);
+    return characters.filter(c => ids.has(c.id) || ids.has(c.name));
+  }, [chapter.characterFocus, characters]);
+
+  // 关联伏笔：planted/payoff 指向本章，或 chapter.foreshadows 数组包含 ID/标题
+  const relatedForeshadows = useMemo(() => {
+    const ids = new Set(chapter.foreshadows ?? []);
+    return foreshadows.filter(f =>
+      f.plantedChapterId === chapter.id ||
+      f.payoffChapterId === chapter.id ||
+      ids.has(f.id) || ids.has(f.title),
+    );
+  }, [chapter.id, chapter.foreshadows, foreshadows]);
+
+  // 节拍填充数
+  const filledBeats = chapter.beats?.filter(b => b.content?.trim()).length ?? 0;
+
+  // 详情区是否有内容（避免展开后整片空白）
+  const hasDetail =
+    !!chapter.summary?.trim() ||
+    filledBeats > 0 ||
+    relatedCharacters.length > 0 ||
+    relatedForeshadows.length > 0 ||
+    issues.length > 0 ||
+    !!chapter.theme?.trim() ||
+    !!chapter.timeSpan?.trim() ||
+    !!chapter.notes?.trim();
+
   return (
     <li role="listitem" className="list-none">
-      <button
-        type="button"
+      {/* 折叠态/展开态共用的行头 */}
+      <div
+        role="button"
+        tabIndex={0}
         onClick={onSelect}
         onDoubleClick={onOpen}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); onSelect(); }
+          else if (e.key === ' ') { e.preventDefault(); onToggleExpand(); }
+        }}
         title={`${levelLabel}${index} · ${chapter.title}（双击在编辑器中打开）`}
         aria-pressed={selected}
-        className={`group w-full h-12 flex items-center gap-2 px-3 text-left transition-colors relative ${
-          selected
-            ? 'bg-amber-400/10'
-            : bgClass || 'hover:bg-ink-800/30'
+        aria-expanded={expanded}
+        className={`group w-full min-h-12 flex items-center gap-2 px-3 py-2 text-left transition-colors relative cursor-pointer ${
+          selected ? 'bg-amber-400/10' : bgClass || 'hover:bg-ink-800/30'
         }`}
       >
         {/* 选中：左侧 2px amber 边框 */}
         {selected && (
           <span className="absolute left-0 top-0 bottom-0 w-0.5 bg-amber-400" aria-hidden="true" />
         )}
+        {/* 展开/折叠箭头 */}
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onToggleExpand(); }}
+          aria-label={expanded ? '折叠详情' : '展开详情'}
+          className="text-ink-500 hover:text-ink-200 shrink-0 flex items-center"
+        >
+          {expanded
+            ? <ChevronDown className="w-3.5 h-3.5" />
+            : <ChevronRight className="w-3.5 h-3.5" />}
+        </button>
         {/* 层级标签 + 序号 + 标题 */}
         <span className="text-xs text-ink-500 shrink-0 w-14 truncate">{levelLabel}{index}</span>
         <span className="flex-1 min-w-0 text-sm text-ink-200 truncate group-hover:text-ink-100">
@@ -1722,7 +1787,140 @@ function ChapterCardRow({
             ))
           )}
         </span>
-      </button>
+      </div>
+
+      {/* 展开态：详情区 */}
+      {expanded && (
+        <div className="px-4 pb-3 pt-1 space-y-2.5 text-xs bg-ink-900/30 border-t border-ink-800/30">
+          {!hasDetail && (
+            <div className="text-ink-600 italic py-1">
+              暂无详细内容。可在编辑器中补充摘要、节拍、关联角色，或在打磨台右栏用各 AI 面板生成。
+            </div>
+          )}
+
+          {/* 元信息行：状态 / 字数 / 时间跨度 / 主题 */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-500">
+            <span>
+              状态：
+              <span className={
+                chapter.status === 'done' ? 'text-emerald-400' :
+                chapter.status === 'reviewing' ? 'text-amber-400' :
+                chapter.status === 'writing' ? 'text-blue-400' : 'text-ink-400'
+              }>
+                {chapter.status === 'done' ? '已完成' :
+                 chapter.status === 'reviewing' ? '审阅中' :
+                 chapter.status === 'writing' ? '写作中' : '草稿'}
+              </span>
+            </span>
+            <span>字数：<span className="text-ink-300 tabular-nums">{chapter.wordCount}</span></span>
+            {chapter.wordTarget && chapter.wordTarget > 0 && (
+              <span>目标：<span className="text-ink-400 tabular-nums">{chapter.wordTarget}</span></span>
+            )}
+            {chapter.timeSpan?.trim() && <span>时间：<span className="text-ink-400">{chapter.timeSpan}</span></span>}
+            {chapter.theme?.trim() && <span>主题：<span className="text-ink-400">{chapter.theme}</span></span>}
+          </div>
+
+          {/* 摘要 */}
+          {chapter.summary?.trim() && (
+            <div>
+              <div className="text-[11px] text-ink-600 mb-0.5">摘要</div>
+              <div className="text-ink-300 leading-relaxed whitespace-pre-wrap">{chapter.summary}</div>
+            </div>
+          )}
+
+          {/* 节拍 */}
+          {filledBeats > 0 && chapter.beats && (
+            <div>
+              <div className="text-[11px] text-ink-600 mb-0.5">
+                节拍 <span className="text-ink-500">({filledBeats}/{BEAT_TOTAL_SLOTS})</span>
+              </div>
+              <ol className="space-y-1 list-none">
+                {chapter.beats.filter(b => b.content?.trim()).map((b, i) => (
+                  <li key={i} className="flex gap-2 text-ink-400 leading-relaxed">
+                    <span className="text-ink-600 shrink-0 tabular-nums">{i + 1}.</span>
+                    <span className="flex-1">{b.content}</span>
+                    {b.locked && <Lock className="w-3 h-3 text-amber-400/70 shrink-0 mt-0.5" aria-label="已锁定" />}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          {/* 关联角色 + 关联伏笔：横向并列 */}
+          {(relatedCharacters.length > 0 || relatedForeshadows.length > 0) && (
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {relatedCharacters.length > 0 && (
+                <div>
+                  <div className="text-[11px] text-ink-600 mb-0.5">关联角色</div>
+                  <div className="flex flex-wrap gap-1">
+                    {relatedCharacters.map(c => (
+                      <span
+                        key={c.id}
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] bg-blue-500/10 text-blue-300"
+                      >
+                        <Users className="w-2.5 h-2.5" aria-hidden="true" />
+                        {c.name}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {relatedForeshadows.length > 0 && (
+                <div>
+                  <div className="text-[11px] text-ink-600 mb-0.5">关联伏笔</div>
+                  <div className="flex flex-wrap gap-1">
+                    {relatedForeshadows.map(f => (
+                      <span
+                        key={f.id}
+                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] ${
+                          f.status === 'paid-off'
+                            ? 'bg-emerald-500/10 text-emerald-300'
+                            : f.status === 'planted'
+                            ? 'bg-amber-500/10 text-amber-300'
+                            : 'bg-ink-700/40 text-ink-300'
+                        }`}
+                        title={f.description}
+                      >
+                        <Flag className="w-2.5 h-2.5" aria-hidden="true" />
+                        {f.title}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 问题清单 */}
+          {issues.length > 0 && (
+            <div>
+              <div className="text-[11px] text-ink-600 mb-1">问题清单 ({issues.length})</div>
+              <ul className="space-y-1">
+                {issues.map(issue => {
+                  const sev = issue.severity;
+                  const color = sev === 'high' ? 'text-red-400' : sev === 'medium' ? 'text-amber-400' : 'text-emerald-400';
+                  return (
+                    <li key={issue.id} className="flex items-start gap-1.5 text-ink-400 leading-relaxed">
+                      <span className={`shrink-0 ${color}`} aria-hidden="true">●</span>
+                      <span className="flex-1">
+                        <span className={color}>{issue.title}</span>
+                        {issue.description && <span className="text-ink-500"> — {issue.description}</span>}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
+          {/* 备注 */}
+          {chapter.notes?.trim() && (
+            <div className="border-l-2 border-amber-400/30 pl-2 text-ink-400 leading-relaxed">
+              <span className="text-ink-600 text-[11px]">备注：</span>{chapter.notes}
+            </div>
+          )}
+        </div>
+      )}
     </li>
   );
 }
