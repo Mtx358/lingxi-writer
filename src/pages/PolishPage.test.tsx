@@ -42,9 +42,9 @@ const { analyzeProjectHealthMock, recommendPolishGuideMock } = vi.hoisted(() => 
 
 // 懒加载组件 mock：避免 Suspense + 真实 OutlinePolishPanel 的 store 依赖
 vi.mock('@/components/editor/outlinePolish/OutlinePolishPanel', () => ({
-  default: function MockOutlinePolishPanel({ fullScreen }: { fullScreen?: boolean }) {
+  default: function MockOutlinePolishPanel({ fullScreen, embedded }: { fullScreen?: boolean; embedded?: boolean }) {
     return (
-      <div data-testid="mock-outline-polish-panel" data-fullscreen={fullScreen ? 'true' : 'false'}>
+      <div data-testid="mock-outline-polish-panel" data-fullscreen={fullScreen ? 'true' : 'false'} data-embedded={embedded ? 'true' : 'false'}>
         OutlinePolishPanel
       </div>
     );
@@ -368,12 +368,11 @@ describe('PolishPage', () => {
 
   it('返回按钮点击 → 跳转编辑器', async () => {
     mockStore();
-    const { container } = renderPolishPage();
+    renderPolishPage();
     await waitFor(() => expect(screen.getByText('灵犀打磨台')).toBeInTheDocument());
-    // 第一个按钮是返回按钮（aria-label="返回编辑器"）
-    const backBtn = container.querySelector('button[aria-label="返回编辑器"]');
-    expect(backBtn).not.toBeNull();
-    fireEvent.click(backBtn!);
+    // 三栏布局：返回按钮 title="返回编辑器"
+    const backBtn = screen.getByTitle('返回编辑器');
+    fireEvent.click(backBtn);
     await waitFor(() => {
       expect(screen.getByTestId('editor')).toBeInTheDocument();
     });
@@ -518,11 +517,12 @@ describe('PolishPage', () => {
     mockStore();
     renderPolishPage();
     await waitFor(() => expect(screen.getByText('灵犀打磨台')).toBeInTheDocument());
-    // 默认深度模式：显示"项目健康度"
-    expect(screen.getByText('项目健康度')).toBeInTheDocument();
+    // 默认深度模式：显示"待处理问题"（三栏布局左栏健康度摘要标题）
+    expect(screen.getByText('待处理问题')).toBeInTheDocument();
     // 切换到散步模式
     fireEvent.click(screen.getByText('散步模式'));
-    expect(screen.queryByText('项目健康度')).not.toBeInTheDocument();
+    // 散步模式替换整个三栏布局为 WalkModePanel，"待处理问题"不再渲染
+    expect(screen.queryByText('待处理问题')).not.toBeInTheDocument();
   });
 
   // ============ 健康度总览：徽章与状态 ============
@@ -548,8 +548,11 @@ describe('PolishPage', () => {
     });
     mockStore();
     renderPolishPage();
+    // 三栏布局：高危按钮显示"🔴 高危 N 个"（分 span 渲染），验证按钮内含高危+计数
     await waitFor(() => {
-      expect(screen.getByText('1 高危')).toBeInTheDocument();
+      const highLabel = screen.getByText('高危');
+      const btn = highLabel.closest('button');
+      expect(btn?.textContent).toContain('1');
     });
   });
 
@@ -575,8 +578,11 @@ describe('PolishPage', () => {
     });
     mockStore();
     renderPolishPage();
+    // 三栏布局：中危按钮显示"🟡 中危 N 个"（分 span 渲染），验证按钮内含中危+计数
     await waitFor(() => {
-      expect(screen.getByText('1 中危')).toBeInTheDocument();
+      const mediumLabel = screen.getByText('中危');
+      const btn = mediumLabel.closest('button');
+      expect(btn?.textContent).toContain('1');
     });
   });
 
@@ -608,8 +614,9 @@ describe('PolishPage', () => {
   it('点击健康度总览头部 → 切换折叠/展开状态', async () => {
     mockStore();
     renderPolishPage();
-    await waitFor(() => expect(screen.getByText('项目健康度')).toBeInTheDocument());
-    const healthHeader = screen.getByText('项目健康度').closest('button')!;
+    await waitFor(() => expect(screen.getByText('灵犀打磨台')).toBeInTheDocument());
+    // 三栏布局：问题清单区域可折叠，标题为"问题清单 & 智能引导"
+    const healthHeader = screen.getByText('问题清单 & 智能引导').closest('button')!;
     // 默认展开，点击后折叠
     expect(healthHeader).toBeInTheDocument();
     fireEvent.click(healthHeader);
@@ -645,7 +652,7 @@ describe('PolishPage', () => {
     await waitFor(() => {
       expect(screen.getByText(/建议本次打磨按以下顺序/)).toBeInTheDocument();
     });
-    expect(screen.getByText(/预计 8 分钟/)).toBeInTheDocument();
+    expect(screen.getByText('8 分钟')).toBeInTheDocument();
     // 步骤项
     expect(screen.getByText(/1\. 高危问题/)).toBeInTheDocument();
   });
@@ -764,6 +771,7 @@ describe('PolishPage', () => {
   });
 
   // ============ 统计芯片 ============
+  // 三栏布局：统计芯片在「详细统计」可折叠区内，默认折叠，需先展开。
   it('统计芯片：渲染章节/字数/角色/伏笔/设定/灵感/快照 数量', async () => {
     mockStore({
       chapters: [
@@ -778,6 +786,7 @@ describe('PolishPage', () => {
     });
     renderPolishPage();
     await waitFor(() => expect(screen.getByText('灵犀打磨台')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('详细统计'));
     // 字数 8000（<9999 显示原数字）
     expect(screen.getByText('8000')).toBeInTheDocument();
     // 灵感数 1（避免与 "1 高危" 等冲突，用灵感标签上下文）
@@ -791,6 +800,7 @@ describe('PolishPage', () => {
     });
     renderPolishPage();
     await waitFor(() => expect(screen.getByText('灵犀打磨台')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('详细统计'));
     expect(screen.getByText('1.5万')).toBeInTheDocument();
   });
 
@@ -798,6 +808,7 @@ describe('PolishPage', () => {
     mockStore({ coreDriver: makeCoreDriver({ type: 'character' }) });
     renderPolishPage();
     await waitFor(() => expect(screen.getByText('灵犀打磨台')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('详细统计'));
     expect(screen.getByText('人物驱动')).toBeInTheDocument();
   });
 
@@ -805,6 +816,7 @@ describe('PolishPage', () => {
     mockStore({ coreDriver: null });
     renderPolishPage();
     await waitFor(() => expect(screen.getByText('灵犀打磨台')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('详细统计'));
     expect(screen.getByText('未锁')).toBeInTheDocument();
   });
 
@@ -812,6 +824,7 @@ describe('PolishPage', () => {
     mockStore({ getBlueprint: vi.fn().mockReturnValue(makeBlueprint({ lockedAt: null })) });
     renderPolishPage();
     await waitFor(() => expect(screen.getByText('灵犀打磨台')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('详细统计'));
     expect(screen.getByText('已生成')).toBeInTheDocument();
   });
 
@@ -819,6 +832,7 @@ describe('PolishPage', () => {
     mockStore({ getBlueprint: vi.fn().mockReturnValue(makeBlueprint({ lockedAt: NOW })) });
     renderPolishPage();
     await waitFor(() => expect(screen.getByText('灵犀打磨台')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('详细统计'));
     expect(screen.getByText('已锁')).toBeInTheDocument();
   });
 
@@ -826,17 +840,19 @@ describe('PolishPage', () => {
     mockStore({ getBlueprint: vi.fn().mockReturnValue(null) });
     renderPolishPage();
     await waitFor(() => expect(screen.getByText('灵犀打磨台')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('详细统计'));
     expect(screen.getByText('未生成')).toBeInTheDocument();
   });
 
   // ============ 工作区 ============
-  it('全屏工作区渲染 OutlinePolishPanel（fullScreen=true）', async () => {
+  it('三栏布局渲染 OutlinePolishPanel（embedded=true）', async () => {
     mockStore();
     renderPolishPage();
     await waitFor(() => {
       const panel = screen.getByTestId('mock-outline-polish-panel');
       expect(panel).toBeInTheDocument();
-      expect(panel.getAttribute('data-fullscreen')).toBe('true');
+      // 三栏布局：右栏嵌入 OutlinePolishPanel，使用 embedded 而非 fullScreen
+      expect(panel.getAttribute('data-embedded')).toBe('true');
     });
   });
 

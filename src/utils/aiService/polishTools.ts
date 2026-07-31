@@ -10,6 +10,7 @@
  * LLM 输出经白名单校验与字段截断后返回，避免脏数据污染 UI。
  */
 import type { Chapter, Character, Foreshadow, SceneLocator, ForeshadowPayoffCheck, EmergencyRecoveryPlan, EmergencyRecoveryVariant } from '@/types';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 import type { TabId } from '@/components/editor/outlinePolish/types';
 import { getLLMClient, parseJsonFromLLM } from './core';
 
@@ -24,7 +25,8 @@ export interface SceneLocatorSuggestion {
 
 /**
  * 为给定章节批量推断场景定位仪四要素。
- * 仅处理 levelType === 'chapter' 的正文章节；跳过卷/书级节点。
+ * 可打磨单元 = 含正文的节点（chapter/part/section），跳过纯容器（book/volume）。
+ * 导入大纲是卷→部结构，部（part）有正文，应纳入分析。
  */
 export async function suggestSceneLocators(params: {
   chapters: Chapter[];
@@ -32,7 +34,7 @@ export async function suggestSceneLocators(params: {
   foreshadows: Foreshadow[];
 }): Promise<SceneLocatorSuggestion[]> {
   const { chapters, characters, foreshadows } = params;
-  const mainChapters = chapters.filter(c => c.levelType === 'chapter').slice(0, 40);
+  const mainChapters = chapters.filter(c => isPolishableChapter(c)).slice(0, 40);
   if (mainChapters.length === 0) return [];
 
   const llmClient = getLLMClient();
@@ -243,7 +245,7 @@ export async function parseNaturalLanguageCommand(params: {
 
   try {
     const validTabs = NL_KEYWORD_MAP.map(k => k.tab);
-    const chDigest = chapters.filter(c => c.levelType === 'chapter').slice(0, 40)
+    const chDigest = chapters.filter(c => isPolishableChapter(c)).slice(0, 40)
       .map(c => `id=${c.id} 第${c.order + 1}章《${c.title}》`).join('\n');
     const prompt = `用户在小说打磨台中输入了一句自然语言命令，请解析为跳转意图 + 结构化语义槽位。
 
@@ -306,7 +308,7 @@ function heuristicNLCommand(input: string, chapters: Chapter[]): NLCommandIntent
   let effectiveNodeFromChapter = '';
   if (numMatch) {
     const n = parseChineseNumber(numMatch[1]);
-    const ch = chapters.filter(c => c.levelType === 'chapter').find(c => c.order === n - 1);
+    const ch = chapters.filter(c => isPolishableChapter(c)).find(c => c.order === n - 1);
     if (ch) {
       targetChapterId = ch.id;
       effectiveNodeFromChapter = `第${n}章`;
@@ -446,7 +448,7 @@ export async function analyzeEmotionConsistency(params: {
   chapters: Chapter[];
 }): Promise<EmotionConsistencyReport> {
   const { chapters } = params;
-  const mainChapters = chapters.filter(c => c.levelType === 'chapter').slice(0, 40);
+  const mainChapters = chapters.filter(c => isPolishableChapter(c)).slice(0, 40);
   if (mainChapters.length === 0) {
     return { curve: [], inconsistencies: [], overview: '暂无正文章节，无法分析情感走向。' };
   }
@@ -597,7 +599,7 @@ export async function classifyReaderReview(params: {
 
   try {
     const charList = characters.slice(0, 20).map(c => `${c.id}:${c.name}`).join('、') || '（无角色）';
-    const chList = chapters.filter(c => c.levelType === 'chapter').slice(0, 30)
+    const chList = chapters.filter(c => isPolishableChapter(c)).slice(0, 30)
       .map(c => `第${c.order + 1}章 id=${c.id}《${c.title}》`).join('、') || '（无章节）';
     const fList = foreshadows.slice(0, 15).map(f => `${f.id}:${f.title}[${f.status}]`).join('、') || '（无伏笔）';
 
@@ -662,7 +664,7 @@ function heuristicClassify(
   const chMatch = content.match(/第\s*(\d+)\s*章/);
   if (chMatch) {
     const order = parseInt(chMatch[1], 10) - 1;
-    const chapter = chapters.find(c => c.order === order && c.levelType === 'chapter');
+    const chapter = chapters.find(c => c.order === order && isPolishableChapter(c));
     if (chapter) {
       if (content.includes('动机') || content.includes('拖') || content.includes('无聊')) {
         return {
@@ -703,7 +705,7 @@ export async function detectInspirationGaps(params: {
   foreshadows: Foreshadow[];
 }): Promise<InspirationGapResult[]> {
   const { chapters, characters, foreshadows } = params;
-  const mainChapters = chapters.filter(c => c.levelType === 'chapter');
+  const mainChapters = chapters.filter(c => isPolishableChapter(c));
   if (mainChapters.length === 0) return [];
 
   const llmClient = getLLMClient();
@@ -913,7 +915,7 @@ export async function runHypothesisProjection(params: {
   chapters: Chapter[];
 }): Promise<HypothesisProjectionResult> {
   const { hypothesis, anchorChapterOrder, chapters } = params;
-  const mainChapters = chapters.filter(c => c.levelType === 'chapter').sort((a, b) => a.order - b.order);
+  const mainChapters = chapters.filter(c => isPolishableChapter(c)).sort((a, b) => a.order - b.order);
   // 推演范围：从假设锚点章到结尾
   const downstream = mainChapters.filter(c => c.order >= anchorChapterOrder - 1).slice(0, 15);
 
@@ -1156,7 +1158,7 @@ export async function generateEmergencyRecoveryPlan(params: {
   characters: Character[];
 }): Promise<EmergencyRecoveryPlan> {
   const { foreshadow, chapters, characters } = params;
-  const mainChapters = chapters.filter(c => c.levelType === 'chapter').sort((a, b) => a.order - b.order);
+  const mainChapters = chapters.filter(c => isPolishableChapter(c)).sort((a, b) => a.order - b.order);
   // 就近选择当前最新章节作为推荐回收点（已过埋设点的最近章节）
   const plantedOrder = mainChapters.find(c => c.id === foreshadow.plantedChapterId)?.order ?? 0;
   const candidates = mainChapters.filter(c => c.order >= plantedOrder);

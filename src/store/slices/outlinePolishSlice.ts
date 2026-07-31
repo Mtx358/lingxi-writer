@@ -48,6 +48,7 @@ import type {
   CharacterEmotionConsistencyReport,
   PacingAdjustmentAdvice,
 } from '@/types';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 import { generateId, markDirty } from '@/utils/storage';
 import { toast } from '@/hooks/useToast';
 import { getErrorMessage } from '@/lib/errorUtils';
@@ -304,7 +305,7 @@ export const createOutlinePolishSlice: StateCreator<AppState, [], [], OutlinePol
         ? chapters
         : chapters.filter(c => c.id === scope || isDescendant(chapters, c.id, scope));
 
-      const mainChapters = scopedChapters.filter(c => c.levelType === 'chapter');
+      const mainChapters = scopedChapters.filter(c => isPolishableChapter(c));
 
       // 1. AI 多维度诊断（mock 模式下走启发式规则，仍返回结构化 issues）
       let issues: OutlineIssue[] = [];
@@ -333,7 +334,10 @@ export const createOutlinePolishSlice: StateCreator<AppState, [], [], OutlinePol
         emotion: computeEmotion(ch),
       }));
       const threeActRatio = computeThreeActRatio(mainChapters);
-      const characterArcs: CharacterArcAnalysis[] = analyzeCharacterArcs(scopedChapters, characters);
+      // 人物弧光分析也使用 mainChapters（已排除 book/volume 容器），与节奏/情感曲线保持一致。
+      // 此前传 scopedChapters（含容器），analyzeCharacterArcs 内部再过滤 chapter-only，
+      // 导致导入大纲（卷→部）的人物弧光分析全空。
+      const characterArcs: CharacterArcAnalysis[] = analyzeCharacterArcs(mainChapters, characters);
       const foreshadowDensity = computeForeshadowDensity(mainChapters, foreshadows);
 
       const totalWords = mainChapters.reduce((s, c) => s + (c.wordCount || 0), 0);

@@ -1,4 +1,5 @@
 import type { Chapter, ChapterAnalysis, CharacterArcAnalysis, Character } from '@/types';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 import { parseJsonFromLLM, getLLMClient } from './core';
 import { READING_SPEED_WPM } from '@/constants/config';
 
@@ -80,7 +81,7 @@ export async function analyzeStructure(chapters: Chapter[]): Promise<{
   const settings = llmClient.getSettings();
   if (settings.provider !== 'mock') {
     try {
-      const topChapters = chapters.filter(c => c.levelType === 'chapter');
+      const topChapters = chapters.filter(c => isPolishableChapter(c));
       const chapterList = topChapters.map((c, i) =>
         `第${i + 1}章 ${c.title}: ${c.summary || c.content.replace(/<[^>]*>/g, '').slice(0, 200)}`
       ).join('\n');
@@ -122,8 +123,8 @@ ${chapterList || '（暂无章节）'}`;
     { type: 'pacing', severity: 'info', chapterId: chapters[0]?.id, description: '开篇节奏偏慢，建议加快冲突引入', suggestion: '可以将悬念前置，在第一章就抛出核心问题。' },
   ];
 
-  const pacing = chapters.filter(c => c.levelType === 'chapter').map(() => 30 + Math.floor(Math.random() * 60));
-  const emotionCurve = chapters.filter(c => c.levelType === 'chapter').map(() => 40 + Math.floor(Math.random() * 50));
+  const pacing = chapters.filter(c => isPolishableChapter(c)).map(() => 30 + Math.floor(Math.random() * 60));
+  const emotionCurve = chapters.filter(c => isPolishableChapter(c)).map(() => 40 + Math.floor(Math.random() * 50));
 
   return { issues, pacing, emotionCurve };
 }
@@ -135,7 +136,7 @@ export async function checkStyleConsistency(chapters: Chapter[]): Promise<{
   const settings = llmClient.getSettings();
   if (settings.provider !== 'mock') {
     try {
-      const topChapters = chapters.filter(c => c.levelType === 'chapter');
+      const topChapters = chapters.filter(c => isPolishableChapter(c));
       const chapterList = topChapters.map(c =>
         `章节 ${c.title}: ${c.content.replace(/<[^>]*>/g, '').slice(0, 500)}`
       ).join('\n---\n');
@@ -176,7 +177,7 @@ export function analyzeCharacterArcs(
   chapters: Chapter[],
   characters: Character[],
 ): CharacterArcAnalysis[] {
-  const mainChapters = chapters.filter(c => c.levelType === 'chapter');
+  const mainChapters = chapters.filter(c => isPolishableChapter(c));
   if (characters.length === 0 || mainChapters.length === 0) return [];
 
   return characters.map(character => {

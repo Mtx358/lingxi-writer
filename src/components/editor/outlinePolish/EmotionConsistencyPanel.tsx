@@ -10,6 +10,7 @@ import { useAppStore } from '@/store/useAppStore';
 import { analyzeEmotionConsistency, type EmotionConsistencyReport } from '@/utils/aiService/polishTools';
 import { toast } from '@/hooks/useToast';
 import { Section, EmptyHint, CurveCard } from './shared';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 
 export function EmotionConsistencyPanel() {
   const chapters = useAppStore(s => s.chapters);
@@ -19,7 +20,7 @@ export function EmotionConsistencyPanel() {
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<EmotionConsistencyReport | null>(null);
 
-  const mainChapters = chapters.filter(c => c.levelType === 'chapter');
+  const mainChapters = chapters.filter(c => isPolishableChapter(c));
 
   const handleAnalyze = useCallback(async () => {
     if (mainChapters.length === 0) return;

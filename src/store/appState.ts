@@ -449,6 +449,8 @@ export interface AppState {
   deleteStoryLink: (linkId: string) => void;
   /** 获取章节关联的灵感卡（relatedChapterId === chapterId） */
   getRelatedInspirationCards: (chapterId: string) => InspirationCard[];
+  /** 将灵感卡升级为章节：创建新章节（写入卡片内容为正文）并关联卡片，卡片状态置为 outlined */
+  promoteInspirationToChapter: (cardId: string) => Chapter | null;
 
   // ===== 多线作战指挥台（规格书第三阶段） =====
   /** 故事线列表（主线/反派线/支线） */

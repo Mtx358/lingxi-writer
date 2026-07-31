@@ -14,7 +14,7 @@
 import { useMemo, useState } from 'react';
 import {
   Lightbulb, Sparkles, Plus, Search, Trash2, Loader2,
-  Link2, ChevronDown, ChevronRight, HelpCircle, Clock, ArrowRight,
+  Link2, ChevronDown, ChevronRight, HelpCircle, Clock, ArrowRight, BookOpen,
 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import type { InspirationCard, InspirationCardType, InspirationCardStatus, MaterialQuestion } from '@/types';
@@ -144,6 +144,7 @@ function CaptureTab() {
   const deleteCard = useAppStore(s => s.deleteInspirationCard);
   const askCard = useAppStore(s => s.askInspirationCard);
   const addChildCard = useAppStore(s => s.addInspirationChildCard);
+  const promoteToChapter = useAppStore(s => s.promoteInspirationToChapter);
 
   const [filterType, setFilterType] = useState<InspirationCardType | 'all'>('all');
   const [filterStatus, setFilterStatus] = useState<InspirationCardStatus | 'all'>('all');
@@ -466,6 +467,7 @@ function CaptureTab() {
               onAnswerChange={(idx, val) => setAnswers(prev => ({ ...prev, [idx]: val }))}
               onSubmitAnswer={handleAnswer}
               onStatusChange={(status) => updateCard(selected.id, { status })}
+              onPromoteToChapter={() => promoteToChapter(selected.id)}
             />
           ) : (
             <div className="p-6 text-center">
@@ -587,6 +589,7 @@ function CardDetail({
   onAnswerChange,
   onSubmitAnswer,
   onStatusChange,
+  onPromoteToChapter,
 }: {
   card: InspirationCard;
   childrenCards: InspirationCard[];
@@ -597,6 +600,7 @@ function CardDetail({
   onAnswerChange: (idx: number, val: string) => void;
   onSubmitAnswer: (idx: number, q: MaterialQuestion) => void;
   onStatusChange: (status: InspirationCardStatus) => void;
+  onPromoteToChapter: () => void;
 }) {
   const currentStatus = card.status ?? 'pending';
   return (
@@ -631,6 +635,16 @@ function CardDetail({
       <div className="text-[11px] text-ink-300 leading-relaxed whitespace-pre-wrap">
         {card.content || <span className="text-ink-600">（暂无详细内容）</span>}
       </div>
+
+      {/* 升级为章节：灵感卡→大纲桥接，将卡片内容直接写入新章节正文 */}
+      <button
+        onClick={onPromoteToChapter}
+        className="w-full px-2 py-1 text-[11px] bg-cyan-400/10 text-cyan-300 hover:bg-cyan-400/20 rounded flex items-center justify-center gap-1 transition-colors"
+        title="将此灵感卡升级为大纲章节，卡片内容写入正文"
+      >
+        <BookOpen className="w-3 h-3" />
+        {card.relatedChapterId ? '已关联章节，再次升级将新建' : '升级为章节'}
+      </button>
 
       {/* 深度提问（仅主卡可用） */}
       {!card.parentId && (

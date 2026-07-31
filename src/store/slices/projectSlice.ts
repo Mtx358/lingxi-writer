@@ -213,6 +213,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const [
       chaptersR, charactersR, settingCategoriesR, settingItemsR,
       foreshadowsR, materialsR, versionsR, commentsR,
+      inspirationCardsR, storyLinksR, outlineSnapshotsR, coreDriverR, polishLogR, lastOutlineReportR,
     ] = await Promise.allSettled([
       storage.get<Chapter[]>(`project_${projectId}_chapters`, []),
       storage.get<AppState['characters']>(`project_${projectId}_characters`, []),
@@ -222,6 +223,14 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       storage.get<AppState['materials']>(`project_${projectId}_materials`, []),
       storage.get<Record<string, AppState['versions'][string]>>(`project_${projectId}_versions`, {}),
       storage.get<AppState['comments']>(`project_${projectId}_comments`, {}),
+      // 打磨域：灵感卡/连线/快照/核心驱动/打磨日志/诊断报告——此前未持久化，
+      // 刷新或切换项目即丢失，打磨台「提取不到已有内容」。此处补齐读取。
+      storage.get<AppState['inspirationCards']>(`project_${projectId}_inspirationCards`, []),
+      storage.get<AppState['storyLinks']>(`project_${projectId}_storyLinks`, []),
+      storage.get<AppState['outlineSnapshots']>(`project_${projectId}_outlineSnapshots`, []),
+      storage.get<AppState['coreDriver']>(`project_${projectId}_coreDriver`, null),
+      storage.get<AppState['polishLog']>(`project_${projectId}_polishLog`, []),
+      storage.get<AppState['lastOutlineReport']>(`project_${projectId}_lastOutlineReport`, null),
     ]);
     // 收集失败 key 用于统一提示，避免 toast 风暴
     const failedKeys: string[] = [];
@@ -239,6 +248,12 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const materials = settle(materialsR, 'materials', [] as AppState['materials']);
     const versions = settle(versionsR, 'versions', {} as Record<string, AppState['versions'][string]>);
     const comments = settle(commentsR, 'comments', {} as AppState['comments']);
+    const inspirationCards = settle(inspirationCardsR, 'inspirationCards', [] as AppState['inspirationCards']);
+    const storyLinks = settle(storyLinksR, 'storyLinks', [] as AppState['storyLinks']);
+    const outlineSnapshots = settle(outlineSnapshotsR, 'outlineSnapshots', [] as AppState['outlineSnapshots']);
+    const coreDriver = settle(coreDriverR, 'coreDriver', null);
+    const polishLog = settle(polishLogR, 'polishLog', [] as AppState['polishLog']);
+    const lastOutlineReport = settle(lastOutlineReportR, 'lastOutlineReport', null);
     if (reqId !== openProjectRequestId) return; // 被新请求取代
     // localStorage 中的版本以增量 Diff 形式持久化，加载时重建完整内容。
     // 单个 chapter 的 delta 损坏不应让整个 openProject reject——用户无法打开该项目。
@@ -286,7 +301,11 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       versions: decodedVersions,
       conflicts: [],
       aiSuggestions: [],
-      currentChapterId: chapters.length > 0 ? chapters[0].id : null,
+      // 优先选中第一个可打磨单元（非 book 层级）；导入大纲首项是 volume，
+      // 编辑器手建首项是 chapter，三幕模板全为 book 时回退 chapters[0]。
+      // 此前固定取 chapters[0].id，导入大纲场景下指向 volume，与子面板期望的
+      // 可打磨单元不匹配，导致 BeatsTab 等回退到 chapters[0] 选中态错位。
+      currentChapterId: chapters.find(c => c.levelType !== 'book')?.id ?? chapters[0]?.id ?? null,
       lastSavedAt: project?.updatedAt || null,
       // 重置 AI 生成状态、搜索与章节分析，防止上一个项目的残留状态污染当前项目
       isAIGenerating: false,
@@ -297,6 +316,14 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       ...PROJECT_SWITCH_RESET,
       // 批注：PROJECT_SWITCH_RESET 已置空，此处覆盖为本项目加载的批注
       comments,
+      // 打磨域：PROJECT_SWITCH_RESET 已置空，此处覆盖为本项目加载的灵感卡/连线/快照/核心驱动/日志/报告。
+      // 此前只加载未 set，导致刷新后打磨台数据全丢。
+      inspirationCards,
+      storyLinks,
+      outlineSnapshots,
+      coreDriver,
+      polishLog,
+      lastOutlineReport,
       // 灵犀助手域：同步当前项目的支线与存稿配置到顶层字段
       subplots: project?.subplots || [],
       updateSchedule: project?.updateSchedule || null,
@@ -314,8 +341,25 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     if (!data) return false;
 
     const { project, chapters, characters, settingCategories, settingItems, foreshadows, materials, versions } = data;
-    // .cwp 文件不含批注域，从 localStorage sidecar 加载（文件型项目批注跨会话保留）
-    const comments = await storage.get<AppState['comments']>(`project_${project.id}_comments`, {});
+    // .cwp 文件不含批注域与打磨域，从 localStorage sidecar 加载（文件型项目跨会话保留）
+    const [
+      commentsR, inspirationCardsR, storyLinksR, outlineSnapshotsR, coreDriverR, polishLogR, lastOutlineReportR,
+    ] = await Promise.allSettled([
+      storage.get<AppState['comments']>(`project_${project.id}_comments`, {}),
+      storage.get<AppState['inspirationCards']>(`project_${project.id}_inspirationCards`, []),
+      storage.get<AppState['storyLinks']>(`project_${project.id}_storyLinks`, []),
+      storage.get<AppState['outlineSnapshots']>(`project_${project.id}_outlineSnapshots`, []),
+      storage.get<AppState['coreDriver']>(`project_${project.id}_coreDriver`, null),
+      storage.get<AppState['polishLog']>(`project_${project.id}_polishLog`, []),
+      storage.get<AppState['lastOutlineReport']>(`project_${project.id}_lastOutlineReport`, null),
+    ]);
+    const comments = commentsR.status === 'fulfilled' ? commentsR.value : {};
+    const inspirationCards = inspirationCardsR.status === 'fulfilled' ? inspirationCardsR.value : [];
+    const storyLinks = storyLinksR.status === 'fulfilled' ? storyLinksR.value : [];
+    const outlineSnapshots = outlineSnapshotsR.status === 'fulfilled' ? outlineSnapshotsR.value : [];
+    const coreDriver = coreDriverR.status === 'fulfilled' ? coreDriverR.value : null;
+    const polishLog = polishLogR.status === 'fulfilled' ? polishLogR.value : [];
+    const lastOutlineReport = lastOutlineReportR.status === 'fulfilled' ? lastOutlineReportR.value : null;
 
     // 切换项目文件时清理上一项目的素材图片缓存（与 closeProject 一致），
     // 覆盖"从项目 A 直接打开项目文件 B"不经过 closeProject 的场景
@@ -350,7 +394,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       versions,
       conflicts: [],
       aiSuggestions: [],
-      currentChapterId: chapters.length > 0 ? chapters[0].id : null,
+      // 与 openProject 一致：优先选中第一个可打磨单元（非 book 层级）
+      currentChapterId: chapters.find(c => c.levelType !== 'book')?.id ?? chapters[0]?.id ?? null,
       lastSavedAt: project.updatedAt,
       // 重置 AI 生成状态、搜索与章节分析，防止上一个项目的残留状态污染当前项目
       isAIGenerating: false,
@@ -361,6 +406,14 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       ...PROJECT_SWITCH_RESET,
       // 批注：PROJECT_SWITCH_RESET 已置空，此处覆盖为本项目 sidecar 加载的批注
       comments,
+      // 打磨域 sidecar：灵感卡/连线/快照/核心驱动/日志/报告，与批注同属 .cwp 外的 sidecar 持久化。
+      // 此前 openProjectFile 未加载，文件型项目打开后打磨台数据全空。
+      inspirationCards,
+      storyLinks,
+      outlineSnapshots,
+      coreDriver,
+      polishLog,
+      lastOutlineReport,
       // 灵犀助手域：同步当前项目的支线与存稿配置到顶层字段
       subplots: project?.subplots || [],
       updateSchedule: project?.updateSchedule || null,
@@ -374,7 +427,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
   saveProject: async () => {
     if (get().isSaving) return false;
-    const { currentProjectId, currentProjectFilePath, projects, chapters, characters, settingCategories, settingItems, foreshadows, materials, versions, comments } = get();
+    const { currentProjectId, currentProjectFilePath, projects, chapters, characters, settingCategories, settingItems, foreshadows, materials, versions, comments, inspirationCards, storyLinks, outlineSnapshots, coreDriver, polishLog, lastOutlineReport } = get();
 
     if (!currentProjectId) return false;
 
@@ -407,6 +460,16 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           // 文件型项目也能跨会话保留批注，仅不随 .cwp 导出
           void storage.set(`project_${currentProjectId}_comments`, comments)
             .catch(e => logError('persist comments sidecar failed', e, { projectId: currentProjectId }));
+          // 打磨域 sidecar：灵感卡/连线/快照/核心驱动/打磨日志/诊断报告同样不随 .cwp 导出，
+          // 但需跨会话保留，否则文件型项目刷新即丢失打磨成果
+          void storage.setMany({
+            [`project_${currentProjectId}_inspirationCards`]: inspirationCards,
+            [`project_${currentProjectId}_storyLinks`]: storyLinks,
+            [`project_${currentProjectId}_outlineSnapshots`]: outlineSnapshots,
+            [`project_${currentProjectId}_coreDriver`]: coreDriver,
+            [`project_${currentProjectId}_polishLog`]: polishLog,
+            [`project_${currentProjectId}_lastOutlineReport`]: lastOutlineReport,
+          }).catch(e => logError('persist polish domain sidecar failed', e, { projectId: currentProjectId }));
           // 重读最新 project：await 期间用户可能通过 updateProject 修改了 title/cover 等字段，
           // 闭包中的 updatedProject 基于陈旧 projects 快照构建，直接 set 会用陈旧字段覆盖
           // 并发修改导致丢失。totalWords 与 updatedAt 来自本次保存快照应保留；其他字段从
@@ -446,6 +509,14 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           [`project_${currentProjectId}_materials`]: materials,
           [`project_${currentProjectId}_versions`]: encodedVersions,
           [`project_${currentProjectId}_comments`]: comments,
+          // 打磨域：灵感卡/连线/快照/核心驱动/打磨日志/诊断报告——
+          // 此前未持久化，刷新或切换项目即丢失，打磨台「提取不到已有内容」。此处补齐写入。
+          [`project_${currentProjectId}_inspirationCards`]: inspirationCards,
+          [`project_${currentProjectId}_storyLinks`]: storyLinks,
+          [`project_${currentProjectId}_outlineSnapshots`]: outlineSnapshots,
+          [`project_${currentProjectId}_coreDriver`]: coreDriver,
+          [`project_${currentProjectId}_polishLog`]: polishLog,
+          [`project_${currentProjectId}_lastOutlineReport`]: lastOutlineReport,
         });
         // 与 Electron 分支同理：重读最新 project 后合并 totalWords/updatedAt，
         // 避免陈旧 updatedProject 覆盖 await 期间的并发 updateProject 修改
@@ -562,6 +633,13 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       storage.remove(`project_${projectId}_materials`),
       storage.remove(`project_${projectId}_versions`),
       storage.remove(`project_${projectId}_comments`),
+      // 打磨域：与核心数据一并清理，避免删除项目后残留孤儿数据
+      storage.remove(`project_${projectId}_inspirationCards`),
+      storage.remove(`project_${projectId}_storyLinks`),
+      storage.remove(`project_${projectId}_outlineSnapshots`),
+      storage.remove(`project_${projectId}_coreDriver`),
+      storage.remove(`project_${projectId}_polishLog`),
+      storage.remove(`project_${projectId}_lastOutlineReport`),
     ]);
     // 关键：若 patchProjects 失败，磁盘仍保留该项目记录，重启后会"复活"。
     // 此处回滚内存状态，让用户感知删除失败并重试，避免内存与磁盘不一致

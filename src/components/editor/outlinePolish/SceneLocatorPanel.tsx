@@ -11,6 +11,7 @@ import { suggestSceneLocators, scoreSceneLocator, type SceneLocatorSuggestion } 
 import { toast } from '@/hooks/useToast';
 import { Section, EmptyHint } from './shared';
 import type { SceneLocator } from '@/types';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 
 export function SceneLocatorPanel() {
   const chapters = useAppStore(s => s.chapters);
@@ -22,7 +23,7 @@ export function SceneLocatorPanel() {
   const [loading, setLoading] = useState(false);
   const [suggestions, setSuggestions] = useState<Record<string, SceneLocatorSuggestion>>({});
 
-  const mainChapters = chapters.filter(c => c.levelType === 'chapter');
+  const mainChapters = chapters.filter(c => isPolishableChapter(c));
 
   const handleAutoSuggest = useCallback(async () => {
     if (mainChapters.length === 0) return;

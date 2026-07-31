@@ -14,7 +14,7 @@
  * 顶层用 StageId 切换阶段（左侧侧边栏），阶段内用 TabId 切换子功能（顶部 Tab 栏）。
  * 所有子功能由同目录各功能域子模块渲染，AI 调用 / 导出逻辑由 useOutlinePolishActions hook 统一封装。
  */
-import { useState, useMemo, useEffect, lazy, Suspense } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import {
   Wand2,
   Target,
@@ -129,7 +129,20 @@ const STAGE_ICON: Record<StageId, typeof Target> = {
   modify: GitCompareArrows,
 };
 
-export default function OutlinePolishPanel({ fullScreen = false }: { fullScreen?: boolean }) {
+export default function OutlinePolishPanel({
+  fullScreen = false,
+  embedded = false,
+  activeStage: controlledStage,
+  onStageChange,
+}: {
+  fullScreen?: boolean;
+  /** 嵌入模式：隐藏阶段步骤条与阶段标题区，仅保留子 Tab 栏 + 操作按钮 + 内容区，供外层三栏布局嵌入 */
+  embedded?: boolean;
+  /** 受控阶段：传入时由父组件管理 activeStage */
+  activeStage?: StageId;
+  /** 受控阶段变更回调 */
+  onStageChange?: (s: StageId) => void;
+}) {
   const chapters = useAppStore(s => s.chapters);
   const foreshadows = useAppStore(s => s.foreshadows);
   const currentChapterId = useAppStore(s => s.currentChapterId);
@@ -144,11 +157,33 @@ export default function OutlinePolishPanel({ fullScreen = false }: { fullScreen?
     [comments],
   );
 
-  // 当前阶段（默认灵感打磨）
-  const [activeStage, setActiveStage] = useState<StageId>('inspiration');
+  // 当前阶段（默认灵感打磨）。受控模式：交给父组件；非受控：本地维护。
+  const [internalStage, setInternalStage] = useState<StageId>('inspiration');
+  const activeStage = controlledStage ?? internalStage;
+  const setActiveStage = useCallback((s: StageId) => {
+    if (onStageChange) {
+      onStageChange(s);
+    } else {
+      setInternalStage(s);
+    }
+  }, [onStageChange]);
+
   // 当前阶段内的子 Tab（默认每个阶段的第一个 tab）
   const [activeTab, setActiveTab] = useState<TabId>('inspiration');
   const [scope, setScope] = useState<'all' | string>('all');
+
+  // 受控阶段切换时同步 activeTab：若当前 activeTab 不属于新阶段，则切到新阶段首个 Tab。
+  // storage 事件跳转时会同时设置 stage 与 targetTab，此时 targetTab 属于新阶段，不会被重置。
+  const prevControlledStageRef = useRef<StageId | undefined>(controlledStage);
+  useEffect(() => {
+    if (!controlledStage) return;
+    if (controlledStage === prevControlledStageRef.current) return;
+    prevControlledStageRef.current = controlledStage;
+    const newStage = STAGES.find(s => s.id === controlledStage);
+    if (newStage && !newStage.tabs.includes(activeTab)) {
+      setActiveTab(newStage.tabs[0]);
+    }
+  }, [controlledStage, activeTab]);
 
   // 监听健康度快捷跳转：外部通过 localStorage + storage 事件传递 targetTab
   useEffect(() => {
@@ -179,11 +214,12 @@ export default function OutlinePolishPanel({ fullScreen = false }: { fullScreen?
       localStorage.removeItem('polish:targetTab');
     }
     return () => window.removeEventListener('storage', handler);
-  }, [setCurrentChapter]);
+  }, [setCurrentChapter, setActiveStage]);
 
-  // 备忘 mainChapters：chapters 引用每次 set 都会变，但 levelType==='chapter' 的子集
-  // 大多数时候未变；不 memo 会让下游 SkeletonTab/BeatsTab/CausalTab 等子组件无谓重渲染
-  const mainChapters = useMemo(() => chapters.filter(c => c.levelType === 'chapter'), [chapters]);
+  // 备忘 mainChapters：包含所有层级的大纲节点（卷/部/章/节/幕），不再仅限 levelType==='chapter'。
+  // 否则导入大纲（卷→部结构，无 chapter 层）会全部被过滤，章节网格/节拍/扩展等子面板读不到内容。
+  // chapters 引用每次 set 都会变，但内容大多数时候未变；不 memo 会让下游子组件无谓重渲染。
+  const mainChapters = useMemo(() => chapters, [chapters]);
 
   const { handleAnalyze, handleExportMarkdown } = useOutlinePolishActions(report, scope);
 
@@ -207,165 +243,199 @@ export default function OutlinePolishPanel({ fullScreen = false }: { fullScreen?
 
   return (
     <div className="h-full flex flex-col">
-      {/* 5 阶段步骤条：fullScreen 横向 / 默认纵向侧边栏 */}
-      {fullScreen ? (
-        <nav aria-label="打磨阶段" className="border-b border-ink-800/50 flex items-center px-2 py-1.5 gap-1 bg-ink-900/30">
-          <ul role="list" className="flex items-center gap-1">
-            {STAGES.map((stage, idx) => {
-              const Icon = STAGE_ICON[stage.id];
-              const isActive = activeStage === stage.id;
-              return (
-                <li key={stage.id} className="flex items-center shrink-0">
-                  {idx > 0 && <span className="text-ink-700 mx-0.5" aria-hidden="true">→</span>}
-                  <button
-                    onClick={() => handleStageChange(stage.id)}
-                    aria-current={isActive ? 'step' : undefined}
-                    title={`${stage.label}：${stage.description}`}
-                    className={`px-3 py-1.5 rounded-md text-xs flex items-center gap-1.5 transition-colors ${
-                      isActive
-                        ? 'text-amber-300 bg-amber-400/10 font-medium'
-                        : 'text-ink-500 hover:text-ink-300 hover:bg-ink-800/30'
-                    }`}
-                  >
-                    <Icon className="w-3.5 h-3.5" aria-hidden="true" />
-                    {stage.label}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </nav>
-      ) : (
-        <nav aria-label="打磨阶段" className="w-16 border-r border-ink-800/50 flex flex-col py-2 gap-1 bg-ink-900/30">
-          <ul role="list" className="flex flex-col gap-1 flex-1">
-            {STAGES.map(stage => {
-              const Icon = STAGE_ICON[stage.id];
-              const isActive = activeStage === stage.id;
-              return (
-                <li key={stage.id} className="flex-1">
-                  <button
-                    onClick={() => handleStageChange(stage.id)}
-                    aria-current={isActive ? 'step' : undefined}
-                    title={`${stage.label}：${stage.description}`}
-                    className={`w-full min-h-[64px] flex flex-col items-center justify-center gap-1 px-1 transition-colors relative group ${
-                      isActive
-                        ? 'text-amber-300 bg-amber-400/10'
-                        : 'text-ink-500 hover:text-ink-300 hover:bg-ink-800/30'
-                    }`}
-                  >
-                    {isActive && (
-                      <span className="absolute left-0 top-0 bottom-0 w-0.5 bg-amber-400" aria-hidden="true" />
-                    )}
-                    <Icon className="w-4 h-4" aria-hidden="true" />
-                    <span className="text-[10px] leading-tight text-center">{stage.label}</span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </nav>
+      {/* 5 阶段步骤条：fullScreen 横向 / 默认纵向侧边栏 / embedded 隐藏（步骤条由外层三栏布局左栏承载） */}
+      {!embedded && (
+        fullScreen ? (
+          <nav aria-label="打磨阶段" className="border-b border-ink-800/50 flex items-center px-2 py-1.5 gap-1 bg-ink-900/30">
+            <ul role="list" className="flex items-center gap-1">
+              {STAGES.map((stage, idx) => {
+                const Icon = STAGE_ICON[stage.id];
+                const isActive = activeStage === stage.id;
+                return (
+                  <li key={stage.id} className="flex items-center shrink-0">
+                    {idx > 0 && <span className="text-ink-700 mx-0.5" aria-hidden="true">→</span>}
+                    <button
+                      onClick={() => handleStageChange(stage.id)}
+                      aria-current={isActive ? 'step' : undefined}
+                      title={`${stage.label}：${stage.description}`}
+                      className={`px-3 py-1.5 rounded-md text-xs flex items-center gap-1.5 transition-colors ${
+                        isActive
+                          ? 'text-amber-300 bg-amber-400/10 font-medium'
+                          : 'text-ink-500 hover:text-ink-300 hover:bg-ink-800/30'
+                      }`}
+                    >
+                      <Icon className="w-3.5 h-3.5" aria-hidden="true" />
+                      {stage.label}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </nav>
+        ) : (
+          <nav aria-label="打磨阶段" className="w-16 border-r border-ink-800/50 flex flex-col py-2 gap-1 bg-ink-900/30">
+            <ul role="list" className="flex flex-col gap-1 flex-1">
+              {STAGES.map(stage => {
+                const Icon = STAGE_ICON[stage.id];
+                const isActive = activeStage === stage.id;
+                return (
+                  <li key={stage.id} className="flex-1">
+                    <button
+                      onClick={() => handleStageChange(stage.id)}
+                      aria-current={isActive ? 'step' : undefined}
+                      title={`${stage.label}：${stage.description}`}
+                      className={`w-full min-h-[64px] flex flex-col items-center justify-center gap-1 px-1 transition-colors relative group ${
+                        isActive
+                          ? 'text-amber-300 bg-amber-400/10'
+                          : 'text-ink-500 hover:text-ink-300 hover:bg-ink-800/30'
+                      }`}
+                    >
+                      {isActive && (
+                        <span className="absolute left-0 top-0 bottom-0 w-0.5 bg-amber-400" aria-hidden="true" />
+                      )}
+                      <Icon className="w-4 h-4" aria-hidden="true" />
+                      <span className="text-[10px] leading-tight text-center">{stage.label}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </nav>
+        )
       )}
 
       {/* 主内容区：fullScreen 时 flex-1 垂直布局 / 默认 flex-1 水平布局 */}
       <div className={fullScreen ? 'flex-1 flex flex-col min-w-0' : 'flex-1 flex flex-col min-w-0'}>
-        {/* 顶部：阶段标题 + 子 Tab 栏 + 操作按钮 */}
-        <div className="border-b border-ink-800/50">
-          <div className="px-3 py-2 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <Wand2 className="w-4 h-4 text-amber-400 shrink-0" />
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-ink-200 truncate">{currentStage.label}</div>
-                <div className="text-[10px] text-ink-500 truncate">{currentStage.description}</div>
+        {/* 顶部：阶段标题 + 子 Tab 栏 + 操作按钮（embedded 模式下隐藏阶段标题区，由外层渲染章节名头部；仅保留操作按钮行） */}
+        {!embedded && (
+          <div className="border-b border-ink-800/50">
+            <div className="px-3 py-2 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Wand2 className="w-4 h-4 text-amber-400 shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-ink-200 truncate">{currentStage.label}</div>
+                  <div className="text-[10px] text-ink-500 truncate">{currentStage.description}</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                {showExportButton && (
+                  <button
+                    onClick={handleExportMarkdown}
+                    title="导出 Markdown 报告"
+                    className="px-2 py-1 text-xs bg-ink-700/50 text-ink-200 hover:bg-ink-700 rounded transition-colors flex items-center gap-1"
+                  >
+                    <Download className="w-3 h-3" />
+                    导出
+                  </button>
+                )}
+                {showAnalyzeButton && (
+                  <button
+                    onClick={handleAnalyze}
+                    disabled={isPolishing || mainChapters.length === 0}
+                    className="px-2 py-1 text-xs bg-amber-400/10 text-amber-300 hover:bg-amber-400/20 rounded transition-colors disabled:opacity-50 flex items-center gap-1"
+                  >
+                    {isPolishing ? (
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Sparkles className="w-3 h-3" />
+                    )}
+                    {isPolishing ? '诊断中' : '全面分析'}
+                  </button>
+                )}
               </div>
             </div>
-            <div className="flex items-center gap-1 shrink-0">
-              {showExportButton && (
-                <button
-                  onClick={handleExportMarkdown}
-                  title="导出 Markdown 报告"
-                  className="px-2 py-1 text-xs bg-ink-700/50 text-ink-200 hover:bg-ink-700 rounded transition-colors flex items-center gap-1"
-                >
-                  <Download className="w-3 h-3" />
-                  导出
-                </button>
-              )}
-              {showAnalyzeButton && (
-                <button
-                  onClick={handleAnalyze}
-                  disabled={isPolishing || mainChapters.length === 0}
-                  className="px-2 py-1 text-xs bg-amber-400/10 text-amber-300 hover:bg-amber-400/20 rounded transition-colors disabled:opacity-50 flex items-center gap-1"
-                >
-                  {isPolishing ? (
-                    <RefreshCw className="w-3 h-3 animate-spin" />
-                  ) : (
-                    <Sparkles className="w-3 h-3" />
-                  )}
-                  {isPolishing ? '诊断中' : '全面分析'}
-                </button>
-              )}
-            </div>
           </div>
+        )}
 
-          {/* 子 Tab 栏（仅当阶段有多个 Tab 时显示） */}
-          {currentTabs.length > 1 && (
-            <div role="tablist" aria-label={`${currentStage.label}子功能`} className="flex border-t border-ink-800/30 overflow-x-auto">
-              {currentTabs.map(tabId => {
-                const meta = TAB_META[tabId];
-                const Icon = meta.icon;
-                const isActive = activeTab === tabId;
-                // Tab 徽章计数
-                let badge: number | undefined;
-                if (tabId === 'diagnosis') {
-                  badge = report?.issues.filter(i => !i.ignored && !i.resolved).length || 0;
-                } else if (tabId === 'snapshots') {
-                  badge = snapshotCount;
-                } else if (tabId === 'comments') {
-                  badge = unresolvedCommentCount;
-                }
-                return (
-                  <button
-                    key={tabId}
-                    role="tab"
-                    aria-selected={isActive}
-                    aria-controls={`polish-tabpanel-${tabId}`}
-                    onClick={() => setActiveTab(tabId)}
-                    className={`flex-1 min-w-[64px] py-2 text-xs flex items-center justify-center gap-1 transition-colors relative whitespace-nowrap ${
-                      isActive
-                        ? 'text-amber-300 border-b-2 border-amber-400 bg-amber-400/5'
-                        : 'text-ink-500 hover:text-ink-300'
-                    }`}
-                  >
-                    <Icon className="w-3.5 h-3.5" aria-hidden="true" />
-                    {meta.label}
-                    {badge !== undefined && badge > 0 && (
-                      <span className="ml-0.5 px-1 py-px text-[9px] bg-amber-400/20 text-amber-300 rounded-full">
-                        {badge}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-
-          {/* 诊断范围选择器（仅 diagnosis Tab） */}
-          {showScopeSelector && (
-            <div className="px-3 py-2 border-t border-ink-800/30 flex items-center gap-2 text-[11px]">
-              <span className="text-ink-500">诊断范围：</span>
-              <select
-                aria-label="诊断范围"
-                value={scope}
-                onChange={e => setScope(e.target.value)}
-                className="flex-1 bg-ink-800/60 text-ink-200 text-[11px] px-2 py-1 rounded border border-ink-700/50"
+        {/* embedded 模式下：单独渲染操作按钮行（仅在有按钮时显示，保证诊断/导出等关键操作仍可达） */}
+        {embedded && (showExportButton || showAnalyzeButton) && (
+          <div className="px-3 py-1.5 flex items-center justify-end gap-1 border-b border-ink-800/50 bg-ink-900/20">
+            {showExportButton && (
+              <button
+                onClick={handleExportMarkdown}
+                title="导出 Markdown 报告"
+                className="px-2 py-1 text-xs bg-ink-700/50 text-ink-200 hover:bg-ink-700 rounded transition-colors flex items-center gap-1"
               >
-                <option value="all">全量大纲</option>
-                {mainChapters.map(ch => (
-                  <option key={ch.id} value={ch.id}>{ch.title}</option>
-                ))}
-              </select>
-            </div>
-          )}
-        </div>
+                <Download className="w-3 h-3" />
+                导出
+              </button>
+            )}
+            {showAnalyzeButton && (
+              <button
+                onClick={handleAnalyze}
+                disabled={isPolishing || mainChapters.length === 0}
+                className="px-2 py-1 text-xs bg-amber-400/10 text-amber-300 hover:bg-amber-400/20 rounded transition-colors disabled:opacity-50 flex items-center gap-1"
+              >
+                {isPolishing ? (
+                  <RefreshCw className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Sparkles className="w-3 h-3" />
+                )}
+                {isPolishing ? '诊断中' : '全面分析'}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* 子 Tab 栏（仅当阶段有多个 Tab 时显示） */}
+        {currentTabs.length > 1 && (
+          <div role="tablist" aria-label={`${currentStage.label}子功能`} className={`flex border-t border-ink-800/30 overflow-x-auto ${embedded ? 'border-t-0' : ''}`}>
+            {currentTabs.map(tabId => {
+              const meta = TAB_META[tabId];
+              const Icon = meta.icon;
+              const isActive = activeTab === tabId;
+              // Tab 徽章计数
+              let badge: number | undefined;
+              if (tabId === 'diagnosis') {
+                badge = report?.issues.filter(i => !i.ignored && !i.resolved).length || 0;
+              } else if (tabId === 'snapshots') {
+                badge = snapshotCount;
+              } else if (tabId === 'comments') {
+                badge = unresolvedCommentCount;
+              }
+              return (
+                <button
+                  key={tabId}
+                  role="tab"
+                  aria-selected={isActive}
+                  aria-controls={`polish-tabpanel-${tabId}`}
+                  onClick={() => setActiveTab(tabId)}
+                  className={`flex-1 min-w-[64px] py-2 text-xs flex items-center justify-center gap-1 transition-colors relative whitespace-nowrap ${
+                    isActive
+                      ? 'text-amber-300 border-b-2 border-amber-400 bg-amber-400/5'
+                      : 'text-ink-500 hover:text-ink-300'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5" aria-hidden="true" />
+                  {meta.label}
+                  {badge !== undefined && badge > 0 && (
+                    <span className="ml-0.5 px-1 py-px text-[9px] bg-amber-400/20 text-amber-300 rounded-full">
+                      {badge}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* 诊断范围选择器（仅 diagnosis Tab） */}
+        {showScopeSelector && (
+          <div className="px-3 py-2 border-t border-ink-800/30 flex items-center gap-2 text-[11px]">
+            <span className="text-ink-500">诊断范围：</span>
+            <select
+              aria-label="诊断范围"
+              value={scope}
+              onChange={e => setScope(e.target.value)}
+              className="flex-1 bg-ink-800/60 text-ink-200 text-[11px] px-2 py-1 rounded border border-ink-700/50"
+            >
+              <option value="all">全量大纲</option>
+              {mainChapters.map(ch => (
+                <option key={ch.id} value={ch.id}>{ch.title}</option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {/* 内容区：根据 activeTab 渲染对应子组件 */}
         <div

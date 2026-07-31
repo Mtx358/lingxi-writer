@@ -16,6 +16,7 @@ import { useAppStore } from '@/store/useAppStore';
 import { Section, EmptyHint } from './shared';
 import type { Chapter, Foreshadow } from '@/types';
 import { CHAPTER_STATUS_LABELS } from '@/types';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 
 const STATUS_COLOR: Record<Chapter['status'], string> = {
   draft: 'bg-gray-500/60',
@@ -38,7 +39,7 @@ export function TimelinePanel() {
   const setCurrentChapter = useAppStore(s => s.setCurrentChapter);
 
   const mainChapters = useMemo(
-    () => chapters.filter(c => c.levelType === 'chapter').sort((a, b) => a.order - b.order),
+    () => chapters.filter(c => isPolishableChapter(c)).sort((a, b) => a.order - b.order),
     [chapters],
   );
 

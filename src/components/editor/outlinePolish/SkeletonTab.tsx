@@ -11,6 +11,7 @@ import { useAppStore } from '@/store/useAppStore';
 import { confirm } from '@/hooks/useConfirm';
 import { toast } from '@/hooks/useToast';
 import type { CoreDriver } from '@/types';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 import { Section } from './shared';
 import { DRIVER_TYPE_LABELS, CONFLICT_LAYER_LABELS } from './constants';
 import { runHypothesisProjection, type HypothesisProjectionResult } from '@/utils/aiService/polishTools';
@@ -43,7 +44,7 @@ export function SkeletonTab() {
 
   // 假设式推演状态（规格书阶段2-2）
   const chapters = useAppStore(s => s.chapters);
-  const mainChapters = chapters.filter(c => c.levelType === 'chapter').sort((a, b) => a.order - b.order);
+  const mainChapters = chapters.filter(c => isPolishableChapter(c)).sort((a, b) => a.order - b.order);
   const [hypothesis, setHypothesis] = useState('');
   const [anchorOrder, setAnchorOrder] = useState(1);
   const [hypoBusy, setHypoBusy] = useState(false);

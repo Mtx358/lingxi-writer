@@ -17,6 +17,7 @@ import type { InspirationCard, StoryLink, MaterialQuestion } from '@/types';
 import { generateId, markDirty } from '@/utils/storage';
 import { toast } from '@/hooks/useToast';
 import { getErrorMessage } from '@/lib/errorUtils';
+import { escapeHtml } from '@/lib/htmlUtils';
 import { deepAskInspirationCard, generateStoryLink } from '@/utils/aiService';
 import { registerProjectCleanup } from '../projectCleanup';
 
@@ -72,7 +73,8 @@ type InspirationSlice = Pick<AppState,
   | 'inspirationCards' | 'storyLinks' | 'isInspirationBusy'
   | 'addInspirationCard' | 'updateInspirationCard' | 'deleteInspirationCard'
   | 'askInspirationCard' | 'addInspirationChildCard'
-  | 'createStoryLink' | 'deleteStoryLink' | 'getRelatedInspirationCards'>;
+  | 'createStoryLink' | 'deleteStoryLink' | 'getRelatedInspirationCards'
+  | 'promoteInspirationToChapter'>;
 
 export const createInspirationSlice: StateCreator<AppState, [], [], InspirationSlice> = (set, get) => {
   // 捕获 set 引用供模块级清理回调使用
@@ -230,5 +232,37 @@ export const createInspirationSlice: StateCreator<AppState, [], [], InspirationS
 
     getRelatedInspirationCards: (chapterId) =>
       get().inspirationCards.filter(c => c.relatedChapterId === chapterId),
+
+    promoteInspirationToChapter: (cardId) => {
+      const { inspirationCards, currentProjectId } = get();
+      const card = inspirationCards.find(c => c.id === cardId);
+      if (!card || !currentProjectId) {
+        if (!currentProjectId) toast.error('升级失败', '当前没有打开的项目');
+        return null;
+      }
+      // 创建新章节（根级 chapter），标题取卡片标题
+      const chapter = get().addChapter(null, card.title || '未命名章节', undefined, 'chapter');
+      if (!chapter) return null;
+      // 卡片纯文本内容转 HTML 段落写入正文（转义防止 XSS / 标签注入）
+      const htmlContent = card.content
+        .split('\n')
+        .filter(l => l.trim())
+        .map(l => `<p>${escapeHtml(l.trim())}</p>`)
+        .join('\n');
+      if (htmlContent) {
+        get().updateChapterContent(chapter.id, htmlContent);
+      }
+      // 卡片状态置为「已接入大纲」并关联新章节，形成灵感→大纲闭环
+      set({
+        inspirationCards: get().inspirationCards.map(c =>
+          c.id === cardId
+            ? { ...c, status: 'outlined', relatedChapterId: chapter.id }
+            : c
+        ),
+      });
+      markDirty();
+      toast.success('已升级为章节', `「${card.title || '未命名'}」已创建为新章节并写入正文`);
+      return chapter;
+    },
   };
 };

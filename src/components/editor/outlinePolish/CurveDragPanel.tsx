@@ -14,6 +14,7 @@ import { Activity, TrendingUp, Heart, RotateCcw, Info } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { Section, EmptyHint } from './shared';
 import { toast } from '@/hooks/useToast';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 
 type CurveKind = 'tension' | 'emotion';
 
@@ -42,7 +43,7 @@ export function CurveDragPanel() {
   const svgRef = useRef<SVGSVGElement>(null);
 
   const mainChapters = useMemo(
-    () => chapters.filter(c => c.levelType === 'chapter').sort((a, b) => a.order - b.order),
+    () => chapters.filter(c => isPolishableChapter(c)).sort((a, b) => a.order - b.order),
     [chapters],
   );
 

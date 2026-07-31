@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import type { Storyline, StorylineType, IntersectionTarget, Chapter } from '@/types';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 
 /** 故事线类型中文标签 */
 const STORYLINE_TYPE_LABELS: Record<StorylineType, string> = {
@@ -184,10 +185,9 @@ function TimelineSection() {
   const multiLineConflicts = useAppStore(s => s.multiLineConflicts);
   const [dragInfo, setDragInfo] = useState<{ storylineId: string; nodeId: string } | null>(null);
 
-  // 仅取章节级节点（levelType==='chapter'）按 order 排序，作为时间轴列
   const chapterColumns = useMemo(
     () => chapters
-      .filter(c => c.levelType === 'chapter')
+      .filter(c => isPolishableChapter(c))
       .sort((a, b) => a.order - b.order),
     [chapters],
   );
@@ -349,10 +349,9 @@ function IntersectionSection() {
   const [formStorylineIds, setFormStorylineIds] = useState<string[]>([]);
   const [checkingId, setCheckingId] = useState<string | null>(null);
 
-  // 章节级节点供选择
   const chapterOptions = useMemo(
     () => chapters
-      .filter(c => c.levelType === 'chapter')
+      .filter(c => isPolishableChapter(c))
       .sort((a, b) => a.order - b.order),
     [chapters],
   );

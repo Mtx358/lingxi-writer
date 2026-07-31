@@ -15,6 +15,7 @@
 import type { StateCreator } from 'zustand';
 import type { AppState } from '../appState';
 import type { Storyline, StorylineType, IntersectionTarget, TimelineNode, MultiLineConflict } from '@/types';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 import { generateId, markDirty } from '@/utils/storage';
 import { registerProjectCleanup } from '../projectCleanup';
 
@@ -167,9 +168,8 @@ export const createMultiLineSlice: StateCreator<AppState, [], [], MultiLineSlice
         return;
       }
 
-      // 按 order 排序的章节级节点，用于确定"交集前 3 章"窗口
       const sortedChapterLevel = chapters
-        .filter(c => c.levelType === 'chapter')
+        .filter(c => isPolishableChapter(c))
         .sort((a, b) => a.order - b.order);
       const intersectionIdx = sortedChapterLevel.findIndex(c => c.id === target.chapterId);
       // 前 3 章：交集章节之前的至多 3 个章节级节点

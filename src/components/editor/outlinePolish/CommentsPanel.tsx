@@ -9,6 +9,7 @@ import { MessageSquare, Plus, Check, Trash2, RotateCcw, Filter } from 'lucide-re
 import { useAppStore } from '@/store/useAppStore';
 import { Section, EmptyHint } from './shared';
 import type { ChapterComment } from '@/types';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 
 const TYPE_META: Record<ChapterComment['type'], { label: string; color: string; bg: string }> = {
   issue: { label: '问题', color: 'text-red-400', bg: 'bg-red-500/10' },
@@ -31,7 +32,7 @@ export function CommentsPanel() {
   const [newContent, setNewContent] = useState('');
   const [newType, setNewType] = useState<ChapterComment['type']>('issue');
 
-  const mainChapters = useMemo(() => chapters.filter(c => c.levelType === 'chapter'), [chapters]);
+  const mainChapters = useMemo(() => chapters.filter(c => isPolishableChapter(c)), [chapters]);
   const activeChapterId = selectedChapterId || mainChapters[0]?.id || null;
 
   const chapterComments = useMemo(() => {

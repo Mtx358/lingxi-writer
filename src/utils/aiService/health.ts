@@ -1,4 +1,5 @@
 import type { Chapter, Character, Foreshadow, Subplot, UpdateSchedule } from '@/types';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 import type { TabId } from '@/components/editor/outlinePolish/types';
 import { getLLMClient, parseJsonFromLLM } from './core';
 
@@ -122,7 +123,7 @@ export async function analyzeProjectHealth(params: {
   blueprint?: unknown;
 }): Promise<ProjectHealthReport> {
   const { chapters, characters, foreshadows, subplots, updateSchedule, coreDriver, blueprint } = params;
-  const mainChapters = chapters.filter(c => c.levelType === 'chapter');
+  const mainChapters = chapters.filter(c => isPolishableChapter(c));
 
   const llmClient = getLLMClient();
   const settings = llmClient.getSettings();

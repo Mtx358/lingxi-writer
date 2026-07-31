@@ -1,4 +1,5 @@
 import type { Chapter, Character, Foreshadow, OutlineIssue, OutlinePolishDimension, OutlineExpansionOption, ChapterBeat, Material, StructureVariant, ConflictLayer, ReaderEmpathyReport, ReaderEmpathyPoint, ReaderEmpathyIssue } from '@/types';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 import { parseJsonFromLLM, getLLMClient } from './core';
 
 // ==================== 大纲打磨能力域 ====================
@@ -18,7 +19,7 @@ export async function polishOutline(
   characters: Character[] = [],
   foreshadows: Foreshadow[] = [],
 ): Promise<OutlineIssue[]> {
-  const topChapters = chapters.filter(c => c.levelType === 'chapter');
+  const topChapters = chapters.filter(c => isPolishableChapter(c));
   if (topChapters.length === 0) return [];
 
   const llmClient = getLLMClient();
@@ -819,7 +820,7 @@ export async function analyzeCharacterArcIssues(
   chapters: Chapter[],
   characters: Character[] = [],
 ): Promise<CharacterArcIssue[]> {
-  const topChapters = chapters.filter(c => c.levelType === 'chapter');
+  const topChapters = chapters.filter(c => isPolishableChapter(c));
   if (topChapters.length === 0 || characters.length === 0) return [];
 
   const llmClient = getLLMClient();
@@ -1047,7 +1048,7 @@ export async function analyzeRelationshipTemperature(
   characterA: Character,
   characterB: Character,
 ): Promise<RelationshipTemperatureCurve> {
-  const topChapters = chapters.filter(c => c.levelType === 'chapter');
+  const topChapters = chapters.filter(c => isPolishableChapter(c));
 
   const llmClient = getLLMClient();
   const settings = llmClient.getSettings();
@@ -1210,7 +1211,7 @@ function generateHeuristicTemperatureCurve(
 export async function runPacingPressureTest(
   chapters: Chapter[],
 ): Promise<PacingPressureReport> {
-  const topChapters = chapters.filter(c => c.levelType === 'chapter');
+  const topChapters = chapters.filter(c => isPolishableChapter(c));
   if (topChapters.length === 0) {
     return { generatedAt: new Date().toISOString(), scope: 'all', points: [], issues: [] };
   }
@@ -1452,7 +1453,7 @@ export async function analyzeReaderEmpathy(
   characters: Character[] = [],
   foreshadows: Foreshadow[] = [],
 ): Promise<ReaderEmpathyReport> {
-  const topChapters = chapters.filter(c => c.levelType === 'chapter');
+  const topChapters = chapters.filter(c => isPolishableChapter(c));
   if (topChapters.length === 0) {
     return { generatedAt: new Date().toISOString(), scope: 'all', points: [], issues: [], overallScore: 0 };
   }
@@ -1850,7 +1851,7 @@ export async function analyzeCharacterArcCurves(params: {
   characters: Character[];
 }): Promise<CharacterArcCurve[]> {
   const { chapters, characters } = params;
-  const topChapters = chapters.filter(c => c.levelType === 'chapter');
+  const topChapters = chapters.filter(c => isPolishableChapter(c));
   if (topChapters.length === 0 || characters.length === 0) return [];
 
   const llmClient = getLLMClient();
@@ -2062,7 +2063,7 @@ export async function analyzeCharacterEmotionConsistency(params: {
   characters: Character[];
 }): Promise<CharacterEmotionConsistencyReport> {
   const { chapters, characters } = params;
-  const topChapters = chapters.filter(c => c.levelType === 'chapter');
+  const topChapters = chapters.filter(c => isPolishableChapter(c));
   if (topChapters.length === 0 || characters.length === 0) {
     return { generatedAt: new Date().toISOString(), issues: [], curves: [] };
   }

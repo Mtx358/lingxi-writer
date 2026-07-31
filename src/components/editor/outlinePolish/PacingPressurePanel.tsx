@@ -16,6 +16,7 @@ import { Activity, RefreshCw, AlertTriangle, Info, Lightbulb, Sliders, RotateCcw
 import { useAppStore } from '@/store/useAppStore';
 import { toast } from '@/hooks/useToast';
 import type { PacingPressurePoint, PacingIssue } from '@/types';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 
 const ISSUE_TYPE_LABELS: Record<PacingIssue['type'], string> = {
   'low-streak': '连续低能量',
@@ -41,7 +42,7 @@ export function PacingPressurePanel() {
   const [isRunning, setIsRunning] = useState(false);
   const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
 
-  const mainChapters = chapters.filter(c => c.levelType === 'chapter');
+  const mainChapters = chapters.filter(c => isPolishableChapter(c));
 
   const handleRun = async () => {
     setIsRunning(true);

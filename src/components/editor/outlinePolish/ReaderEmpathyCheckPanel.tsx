@@ -11,6 +11,7 @@ import { useState } from 'react';
 import { Heart, RefreshCw, AlertCircle, AlertTriangle, Lightbulb, Info } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import type { ReaderEmpathyIssue, ReaderEmpathyPoint } from '@/types';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 
 const EMPATHY_ISSUE_TYPE_LABELS: Record<ReaderEmpathyIssue['type'], string> = {
   'motivation-gap': '动机断层',
@@ -54,7 +55,7 @@ export function ReaderEmpathyCheckPanel() {
   const [hasRun, setHasRun] = useState(false);
   const [activeFilter, setActiveFilter] = useState<ReaderEmpathyIssue['type'] | null>(null);
 
-  const mainChapters = chapters.filter(c => c.levelType === 'chapter');
+  const mainChapters = chapters.filter(c => isPolishableChapter(c));
 
   // 读者留存风险四项分组统计
   const retentionCounts = READER_RETENTION_TYPES.reduce<Record<string, number>>((acc, t) => {
