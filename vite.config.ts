@@ -68,6 +68,18 @@ export default defineConfig({
         plugins: ['react-dev-locator'],
       } : undefined,
     }),
-    tsconfigPaths()
+    tsconfigPaths(),
+    // Electron 生产环境通过 file:// 协议加载 index.html，Vite 默认会给
+    // <script type="module"> 和 <link rel="modulepreload"> 注入 crossorigin 属性。
+    // file:// 协议不支持 CORS（无 CORS 响应头），带 crossorigin 属性的脚本会以 CORS
+    // 模式请求本地文件导致加载失败 → React 无法启动 → 应用白屏。
+    // 此插件在 build 阶段移除所有 crossorigin 属性，让脚本以 no-cors 方式加载。
+    {
+      name: 'remove-crossorigin-for-electron-file-protocol',
+      apply: 'build',
+      transformIndexHtml(html: string): string {
+        return html.replace(/\s+crossorigin(=["']?[^"'\s>]*["']?)?/gi, '');
+      },
+    },
   ],
 })
