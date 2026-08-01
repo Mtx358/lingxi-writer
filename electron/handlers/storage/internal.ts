@@ -17,6 +17,14 @@ export const ALLOWED_PROJECT_SUBKEYS = new Set([
   'foreshadows',
   'materials',
   'versions',
+  // 评论与打磨域数据（灵感卡/故事线/大纲快照/核心驱动/打磨日志/大纲报告）
+  'comments',
+  'inspirationCards',
+  'storyLinks',
+  'outlineSnapshots',
+  'coreDriver',
+  'polishLog',
+  'lastOutlineReport',
 ]);
 
 export function resolveFilePath(key: string): string {

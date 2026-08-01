@@ -60,14 +60,10 @@ export default defineConfig({
     },
   },
   plugins: [
-    // react-dev-locator 仅在开发模式启用：它是 IDE 点击跳转源码的开发期工具，
-    // 生产构建启用会走 babel 转换链路（比纯 esbuild 慢 2-5 倍）并给每个组件
-    // 注入 dev locator 元数据增大 bundle 体积。
-    react({
-      babel: process.env.NODE_ENV === 'development' ? {
-        plugins: ['react-dev-locator'],
-      } : undefined,
-    }),
+    // react-dev-locator 已移除：该 babel 插件会给每个 JSX 元素注入大量
+    // trae-inspector-* 属性，在某些场景下重复注入导致 JSX 解析失败（vite exited with code 1）。
+    // 它仅是 IDE 点击跳转源码的开发期便利工具，移除后不影响应用功能。
+    react(),
     tsconfigPaths(),
     // Electron 生产环境通过 file:// 协议加载 index.html，Vite 默认会给
     // <script type="module"> 和 <link rel="modulepreload"> 注入 crossorigin 属性。
