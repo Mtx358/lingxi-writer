@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/store/useAppStore';
+import { storage } from '@/utils/storage';
 import { useFocusTrap } from '@/hooks/useFocusTrap';
 import { parseMarkdown, parsePlainText, parseDocx } from '@/utils/importUtils';
 import type { ImportResult, ImportedChapter } from '@/utils/importUtils';
@@ -249,7 +250,21 @@ export default function SmartImportModal({ onClose }: SmartImportModalProps) {
         const state = useAppStore.getState();
         const projects = state.projects;
         const allChapters = state.chapters;
-        const projectFps = projects.map(p => computeProjectFingerprint(p, allChapters));
+        const currentProjectId = state.currentProjectId;
+        // 预加载所有项目的章节，用于指纹计算（state.chapters 只含当前项目）
+        const allProjectsChapters: Record<string, Chapter[]> = {};
+        await Promise.all(projects.map(async (p) => {
+          try {
+            allProjectsChapters[p.id] = await storage.get<Chapter[]>(`project_${p.id}_chapters`, []);
+          } catch {
+            allProjectsChapters[p.id] = [];
+          }
+        }));
+        // 当前项目的章节用 state.chapters（已是最新），避免重复读
+        if (currentProjectId) {
+          allProjectsChapters[currentProjectId] = allChapters;
+        }
+        const projectFps = projects.map(p => computeProjectFingerprint(p, allProjectsChapters[p.id] || []));
         const matches = findMatchingProjects(fp, projectFps);
         const action = decideImportAction(fp, matches, projects.length > 0);
 
@@ -384,6 +399,7 @@ export default function SmartImportModal({ onClose }: SmartImportModalProps) {
 
     let createdProjectId: string | null = null;
     let originalProjectId: string | null = null;
+    let chapterSnapshot: Chapter[] = [];
     try {
       // ===== 模式 1：覆盖 =====
       // 策略：先打开目标项目清空章节，再填充新内容（保留项目本身和 settingCard/blueprint）
@@ -391,6 +407,8 @@ export default function SmartImportModal({ onClose }: SmartImportModalProps) {
         originalProjectId = useAppStore.getState().currentProjectId;
         await openProject(execMode.targetProjectId);
         const existingChapters = useAppStore.getState().chapters;
+        // 删除前保存章节快照，用于失败回滚诊断
+        chapterSnapshot = existingChapters;
         // 删除所有现有章节（按逆序删除避免 order 错位）
         for (const ch of [...existingChapters].sort((a, b) => b.order - a.order)) {
           deleteChapter(ch.id);
@@ -414,7 +432,7 @@ export default function SmartImportModal({ onClose }: SmartImportModalProps) {
           existingChapters,
         );
         // 追加新章节到末尾
-        let order = existingChapters.length;
+        let order = existingChapters.reduce((m, c) => Math.max(m, c.order), -1) + 1;
         for (const ch of newChapters) {
           const levelType: ChapterLevelType = ch.level === 1 ? 'volume' : 'chapter';
           const newCh = addChapter(null, ch.title, order, levelType);
@@ -445,6 +463,15 @@ export default function SmartImportModal({ onClose }: SmartImportModalProps) {
       if (execMode.kind === 'create-new' && createdProjectId) {
         try { await deleteProject(createdProjectId); } catch (rollbackErr) {
           console.error('回滚失败项目时出错:', rollbackErr);
+        }
+      }
+      // overwrite 模式：saveProject 失败意味着磁盘未被写入，重新 openProject 恢复磁盘状态
+      if (execMode.kind === 'overwrite') {
+        console.error('覆盖导入失败，原章节数:', chapterSnapshot.length);
+        try {
+          await openProject(originalProjectId || execMode.targetProjectId);
+        } catch (rollbackErr) {
+          console.error('覆盖模式回滚失败:', rollbackErr);
         }
       }
       if (!isMountedRef.current) return;

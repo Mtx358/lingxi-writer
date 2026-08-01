@@ -61,6 +61,7 @@ const DEFAULT_CONFIGS: Record<string, RateLimitConfig> = {
   // XSS 防护：主进程对单 key 有 50MB size limit，每秒 100 次写入无法撑爆磁盘
   'storage:write': { capacity: 500, refillPerSec: 100 },
   'storage:writeBatch': { capacity: 500, refillPerSec: 100 },
+  'storage:readBatch': { capacity: 500, refillPerSec: 100 },
   'storage:remove': { capacity: 500, refillPerSec: 100 },
   'storage:patchProjects': { capacity: 500, refillPerSec: 100 },
   'storage:writeFile': { capacity: 500, refillPerSec: 100 },

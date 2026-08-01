@@ -53,6 +53,19 @@ export class ElectronStorage implements StorageAPI {
     }
   }
 
+  // 批量读取：一次 IPC 读取多个 key，把 openProject 的 14 次 storage.get 合并为 1 次 IPC，
+  // 避免触发 storage:read 令牌桶限流（capacity=10 < 14）导致首次打开项目时部分请求
+  // 被拒、数据静默丢失。返回 Record<key, unknown>，读取失败或 key 不存在的值为 null，
+  // 由调用方按 key 取值并用默认值回退。整体失败时返回空对象，调用方全部回退到默认值
+  async getMany(keys: string[]): Promise<Record<string, unknown>> {
+    try {
+      return await window.electronAPI!.storage.readBatch(keys);
+    } catch (e) {
+      console.error('Failed to getMany storage:', e);
+      return {};
+    }
+  }
+
   async remove(key: string): Promise<void> {
     try {
       await window.electronAPI!.storage.remove(key);

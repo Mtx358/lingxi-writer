@@ -8,6 +8,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { GitBranch, Loader2, Sparkles, Zap, CheckCircle, RefreshCw } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 import type { Chapter, OutlineExpansionOption } from '@/types';
 
 export function ExpansionPanel({
@@ -129,7 +130,7 @@ export function ExpansionPanel({
           className="w-full bg-ink-800/60 text-ink-200 text-xs px-2 py-1.5 rounded border border-ink-700/50"
         >
           <option value="">未选择</option>
-          {chapters.map(ch => (
+          {chapters.filter(isPolishableChapter).map(ch => (
             <option key={ch.id} value={ch.id}>{ch.title}</option>
           ))}
         </select>

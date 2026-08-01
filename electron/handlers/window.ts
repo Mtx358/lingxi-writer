@@ -130,8 +130,7 @@ function createWindow(opts: { devServerUrl?: string; distRenderer: string }): vo
       // 不响应 F12 / Ctrl+Shift+I / 菜单项 / webContents.openDevTools，
       // 从源头阻断生产环境用户或攻击者通过控制台执行任意 JS（可读取 store 内存数据、
       // 调用受限 IPC 等）。开发环境保留以便调试
-      // ⚠️ 临时打开以排查黑屏问题，排查后改回 isDev
-      devTools: true,
+      devTools: isDev,
     },
   });
 
@@ -250,16 +249,12 @@ function createWindow(opts: { devServerUrl?: string; distRenderer: string }): vo
     mainWindow.loadFile(path.join(distRenderer, 'index.html'));
   }
 
-  // ⚠️ 临时：排查黑屏问题，启动时自动打开 DevTools
-  mainWindow.webContents.on('did-finish-load', () => {
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
-  });
-  // 捕获渲染进程崩溃/无响应事件，便于排查
+  // 捕获渲染进程崩溃/无响应事件，落盘到日志文件便于用户报障时定位
   mainWindow.webContents.on('render-process-gone', (_e, details) => {
-    console.error('[render-process-gone]', details);
+    logger.error('render-process-gone', { reason: details.reason, exitCode: details.exitCode });
   });
   mainWindow.webContents.on('unresponsive', () => {
-    console.error('[unresponsive] 渲染进程无响应');
+    logger.error('renderer unresponsive');
   });
 }
 

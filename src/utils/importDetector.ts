@@ -241,7 +241,7 @@ export function computeImportFingerprint(result: ImportResult): ImportFingerprin
   const normalizedTitle = normalizeTitle(result.title);
   const chapterCount = result.chapters.length;
 
-  const titles = result.chapters.map(c => c.title.trim());
+  const titles = result.chapters.map(c => normalizeTitle(c.title));
   const firstThree = titles.slice(0, 3).join('|');
   const all = titles.join('|');
 
@@ -269,7 +269,7 @@ export function computeProjectFingerprint(
     .filter(c => c.levelType !== 'book' && c.projectId === project.id)
     .sort((a, b) => a.order - b.order);
 
-  const titles = relevantChapters.map(c => c.title.trim());
+  const titles = relevantChapters.map(c => normalizeTitle(c.title));
   const firstThree = titles.slice(0, 3).join('|');
   const all = titles.join('|');
 
@@ -289,6 +289,7 @@ export function computeProjectFingerprint(
 function normalizeTitle(title: string): string {
   return title
     .replace(/[《》【】\[\]()（）"'']/g, '')  // 去书名号/引号/括号
+    .replace(/[:：·、]/g, '')                   // 去常见分隔符（冒号/中点/顿号）
     .replace(/\s+/g, '')                       // 去所有空白
     .toLowerCase();
 }

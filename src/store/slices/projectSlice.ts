@@ -16,6 +16,7 @@ import type { VersionDeltaPayload } from '@/utils/versionDelta';
 import { toast } from '@/hooks/useToast';
 import { getErrorMessage } from '@/lib/errorUtils';
 import { logError } from '@/utils/rendererLogger';
+import { isPolishableChapter } from '@/utils/chapterUtils';
 // 各模块级状态（图片缓存/搜索 Worker/大纲打磨并发守卫/角色搜索缓存/伏笔重算计时器/
 // 章节纯文本缓存等）在各自模块加载时通过 registerProjectCleanup 注册清理函数，
 // 项目切换时只需调用 runProjectCleanup() 一次，无需在此逐一手写。
@@ -203,57 +204,55 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         .catch(e => logError('patchProjects failed', e, { op: 'update', action: 'openProject' }));
     }
 
-    // P-H2 修复：用 Promise.all 并行读取 7 个 key，避免串行 await 在 localStorage
-    // 模式下逐次 tick 推迟状态就绪。并发守卫改为 await 后单次校验：
-    // Promise.all 整体 resolve 时若已被新请求取代，直接丢弃结果即可
-    //
-    // 部分失败容错：改用 Promise.allSettled，单个 key 读取失败（如本地解密异常、
-    // 数据损坏抛错）时回退到默认空数组/对象，避免一个 key 失败导致整个 openProject
-    // reject——用户将完全无法打开该项目。失败情况记录日志并提示用户。
-    const [
-      chaptersR, charactersR, settingCategoriesR, settingItemsR,
-      foreshadowsR, materialsR, versionsR, commentsR,
-      inspirationCardsR, storyLinksR, outlineSnapshotsR, coreDriverR, polishLogR, lastOutlineReportR,
-    ] = await Promise.allSettled([
-      storage.get<Chapter[]>(`project_${projectId}_chapters`, []),
-      storage.get<AppState['characters']>(`project_${projectId}_characters`, []),
-      storage.get<AppState['settingCategories']>(`project_${projectId}_settingCategories`, []),
-      storage.get<AppState['settingItems']>(`project_${projectId}_settingItems`, []),
-      storage.get<AppState['foreshadows']>(`project_${projectId}_foreshadows`, []),
-      storage.get<AppState['materials']>(`project_${projectId}_materials`, []),
-      storage.get<Record<string, AppState['versions'][string]>>(`project_${projectId}_versions`, {}),
-      storage.get<AppState['comments']>(`project_${projectId}_comments`, {}),
-      // 打磨域：灵感卡/连线/快照/核心驱动/打磨日志/诊断报告——此前未持久化，
-      // 刷新或切换项目即丢失，打磨台「提取不到已有内容」。此处补齐读取。
-      storage.get<AppState['inspirationCards']>(`project_${projectId}_inspirationCards`, []),
-      storage.get<AppState['storyLinks']>(`project_${projectId}_storyLinks`, []),
-      storage.get<AppState['outlineSnapshots']>(`project_${projectId}_outlineSnapshots`, []),
-      storage.get<AppState['coreDriver']>(`project_${projectId}_coreDriver`, null),
-      storage.get<AppState['polishLog']>(`project_${projectId}_polishLog`, []),
-      storage.get<AppState['lastOutlineReport']>(`project_${projectId}_lastOutlineReport`, null),
-    ]);
-    // 收集失败 key 用于统一提示，避免 toast 风暴
+    // 批量读取：一次 IPC 读取 14 个 project 子键，避免 storage:read 令牌桶限流
+    // （capacity=10 < 14）导致首次打开项目时 4 个请求被拒、数据静默丢失
+    // （ElectronStorage.get catch 吞错返回 defaultValue，用户看到"打开成功"但内容为空）。
+    // readBatch 整体失败时全部回退到默认值并提示用户；单个 key 值为 null（文件不存在
+    // 或读取失败）时用对应默认值回退，与原 Promise.allSettled + settle 语义一致
+    const batchKeys = [
+      `project_${projectId}_chapters`,
+      `project_${projectId}_characters`,
+      `project_${projectId}_settingCategories`,
+      `project_${projectId}_settingItems`,
+      `project_${projectId}_foreshadows`,
+      `project_${projectId}_materials`,
+      `project_${projectId}_versions`,
+      `project_${projectId}_comments`,
+      `project_${projectId}_inspirationCards`,
+      `project_${projectId}_storyLinks`,
+      `project_${projectId}_outlineSnapshots`,
+      `project_${projectId}_coreDriver`,
+      `project_${projectId}_polishLog`,
+      `project_${projectId}_lastOutlineReport`,
+    ];
+    let batchResult: Record<string, unknown> = {};
     const failedKeys: string[] = [];
-    const settle = <T,>(r: PromiseSettledResult<T>, key: string, fallback: T): T => {
-      if (r.status === 'fulfilled') return r.value;
-      console.warn(`openProject: storage.get(${key}) failed, falling back to default:`, r.reason);
-      failedKeys.push(key);
-      return fallback;
+    try {
+      batchResult = await storage.getMany(batchKeys);
+    } catch (e) {
+      console.warn('openProject: storage.getMany failed, falling back to defaults:', e);
+      failedKeys.push('chapters', 'characters', 'settingCategories', 'settingItems',
+        'foreshadows', 'materials', 'versions', 'comments',
+        'inspirationCards', 'storyLinks', 'outlineSnapshots', 'coreDriver', 'polishLog', 'lastOutlineReport');
+    }
+    const pick = <T>(key: string, fallback: T): T => {
+      const v = batchResult[key];
+      return v !== null && v !== undefined ? (v as T) : fallback;
     };
-    const chapters = settle(chaptersR, 'chapters', [] as Chapter[]);
-    const characters = settle(charactersR, 'characters', [] as AppState['characters']);
-    const settingCategories = settle(settingCategoriesR, 'settingCategories', [] as AppState['settingCategories']);
-    const settingItems = settle(settingItemsR, 'settingItems', [] as AppState['settingItems']);
-    const foreshadows = settle(foreshadowsR, 'foreshadows', [] as AppState['foreshadows']);
-    const materials = settle(materialsR, 'materials', [] as AppState['materials']);
-    const versions = settle(versionsR, 'versions', {} as Record<string, AppState['versions'][string]>);
-    const comments = settle(commentsR, 'comments', {} as AppState['comments']);
-    const inspirationCards = settle(inspirationCardsR, 'inspirationCards', [] as AppState['inspirationCards']);
-    const storyLinks = settle(storyLinksR, 'storyLinks', [] as AppState['storyLinks']);
-    const outlineSnapshots = settle(outlineSnapshotsR, 'outlineSnapshots', [] as AppState['outlineSnapshots']);
-    const coreDriver = settle(coreDriverR, 'coreDriver', null);
-    const polishLog = settle(polishLogR, 'polishLog', [] as AppState['polishLog']);
-    const lastOutlineReport = settle(lastOutlineReportR, 'lastOutlineReport', null);
+    const chapters = pick(batchKeys[0], [] as Chapter[]);
+    const characters = pick(batchKeys[1], [] as AppState['characters']);
+    const settingCategories = pick(batchKeys[2], [] as AppState['settingCategories']);
+    const settingItems = pick(batchKeys[3], [] as AppState['settingItems']);
+    const foreshadows = pick(batchKeys[4], [] as AppState['foreshadows']);
+    const materials = pick(batchKeys[5], [] as AppState['materials']);
+    const versions = pick(batchKeys[6], {} as Record<string, AppState['versions'][string]>);
+    const comments = pick(batchKeys[7], {} as AppState['comments']);
+    const inspirationCards = pick(batchKeys[8], [] as AppState['inspirationCards']);
+    const storyLinks = pick(batchKeys[9], [] as AppState['storyLinks']);
+    const outlineSnapshots = pick(batchKeys[10], [] as AppState['outlineSnapshots']);
+    const coreDriver = pick(batchKeys[11], null);
+    const polishLog = pick(batchKeys[12], [] as AppState['polishLog']);
+    const lastOutlineReport = pick(batchKeys[13], null);
     if (reqId !== openProjectRequestId) return; // 被新请求取代
     // localStorage 中的版本以增量 Diff 形式持久化，加载时重建完整内容。
     // 单个 chapter 的 delta 损坏不应让整个 openProject reject——用户无法打开该项目。
@@ -305,7 +304,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       // 编辑器手建首项是 chapter，三幕模板全为 book 时回退 chapters[0]。
       // 此前固定取 chapters[0].id，导入大纲场景下指向 volume，与子面板期望的
       // 可打磨单元不匹配，导致 BeatsTab 等回退到 chapters[0] 选中态错位。
-      currentChapterId: chapters.find(c => c.levelType !== 'book')?.id ?? chapters[0]?.id ?? null,
+      currentChapterId: chapters.find(c => isPolishableChapter(c))?.id ?? chapters[0]?.id ?? null,
       lastSavedAt: project?.updatedAt || null,
       // 重置 AI 生成状态、搜索与章节分析，防止上一个项目的残留状态污染当前项目
       isAIGenerating: false,
@@ -342,24 +341,33 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
     const { project, chapters, characters, settingCategories, settingItems, foreshadows, materials, versions } = data;
     // .cwp 文件不含批注域与打磨域，从 localStorage sidecar 加载（文件型项目跨会话保留）
-    const [
-      commentsR, inspirationCardsR, storyLinksR, outlineSnapshotsR, coreDriverR, polishLogR, lastOutlineReportR,
-    ] = await Promise.allSettled([
-      storage.get<AppState['comments']>(`project_${project.id}_comments`, {}),
-      storage.get<AppState['inspirationCards']>(`project_${project.id}_inspirationCards`, []),
-      storage.get<AppState['storyLinks']>(`project_${project.id}_storyLinks`, []),
-      storage.get<AppState['outlineSnapshots']>(`project_${project.id}_outlineSnapshots`, []),
-      storage.get<AppState['coreDriver']>(`project_${project.id}_coreDriver`, null),
-      storage.get<AppState['polishLog']>(`project_${project.id}_polishLog`, []),
-      storage.get<AppState['lastOutlineReport']>(`project_${project.id}_lastOutlineReport`, null),
-    ]);
-    const comments = commentsR.status === 'fulfilled' ? commentsR.value : {};
-    const inspirationCards = inspirationCardsR.status === 'fulfilled' ? inspirationCardsR.value : [];
-    const storyLinks = storyLinksR.status === 'fulfilled' ? storyLinksR.value : [];
-    const outlineSnapshots = outlineSnapshotsR.status === 'fulfilled' ? outlineSnapshotsR.value : [];
-    const coreDriver = coreDriverR.status === 'fulfilled' ? coreDriverR.value : null;
-    const polishLog = polishLogR.status === 'fulfilled' ? polishLogR.value : [];
-    const lastOutlineReport = lastOutlineReportR.status === 'fulfilled' ? lastOutlineReportR.value : null;
+    // 批量读取：一次 IPC 读取 7 个 sidecar key，避免 storage:read 令牌桶限流
+    const sidecarKeys = [
+      `project_${project.id}_comments`,
+      `project_${project.id}_inspirationCards`,
+      `project_${project.id}_storyLinks`,
+      `project_${project.id}_outlineSnapshots`,
+      `project_${project.id}_coreDriver`,
+      `project_${project.id}_polishLog`,
+      `project_${project.id}_lastOutlineReport`,
+    ];
+    let sidecarResult: Record<string, unknown> = {};
+    try {
+      sidecarResult = await storage.getMany(sidecarKeys);
+    } catch (e) {
+      console.warn('openProjectFile: storage.getMany failed, falling back to defaults:', e);
+    }
+    const pickSidecar = <T>(key: string, fallback: T): T => {
+      const v = sidecarResult[key];
+      return v !== null && v !== undefined ? (v as T) : fallback;
+    };
+    const comments = pickSidecar(sidecarKeys[0], {} as AppState['comments']);
+    const inspirationCards = pickSidecar(sidecarKeys[1], [] as AppState['inspirationCards']);
+    const storyLinks = pickSidecar(sidecarKeys[2], [] as AppState['storyLinks']);
+    const outlineSnapshots = pickSidecar(sidecarKeys[3], [] as AppState['outlineSnapshots']);
+    const coreDriver = pickSidecar(sidecarKeys[4], null);
+    const polishLog = pickSidecar(sidecarKeys[5], [] as AppState['polishLog']);
+    const lastOutlineReport = pickSidecar(sidecarKeys[6], null);
 
     // 切换项目文件时清理上一项目的素材图片缓存（与 closeProject 一致），
     // 覆盖"从项目 A 直接打开项目文件 B"不经过 closeProject 的场景
@@ -395,7 +403,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       conflicts: [],
       aiSuggestions: [],
       // 与 openProject 一致：优先选中第一个可打磨单元（非 book 层级）
-      currentChapterId: chapters.find(c => c.levelType !== 'book')?.id ?? chapters[0]?.id ?? null,
+      currentChapterId: chapters.find(c => isPolishableChapter(c))?.id ?? chapters[0]?.id ?? null,
       lastSavedAt: project.updatedAt,
       // 重置 AI 生成状态、搜索与章节分析，防止上一个项目的残留状态污染当前项目
       isAIGenerating: false,
@@ -728,7 +736,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     // 清理所有模块级状态（图片缓存/搜索 Worker/大纲打磨并发守卫/角色搜索缓存/伏笔重算计时器/章节纯文本缓存等）
     runProjectCleanup();
 
-    const firstChapter = chapters.find(c => c.levelType === 'chapter');
+    const firstChapter = chapters.find(c => isPolishableChapter(c));
     set({
       projects,
       currentProjectId: project.id,

@@ -179,15 +179,7 @@ export async function parseDocx(arrayBuffer: ArrayBuffer, mapping?: HeadingMappi
     }
   } catch (e) {
     console.error('Failed to parse DOCX:', e);
-    // 清空部分解析结果再 push 失败占位，避免用户看到"章节1 + 章节2 + 导入失败"混合列表
-    // 难以判断哪些是有效数据；统一以失败占位返回，让用户明确知道此次导入无效
-    chapters.length = 0;
-    chapters.push({
-      title: '导入失败',
-      content: '<p>无法解析文档，请尝试其他格式（如 .txt / .md）</p>',
-      level: 2,
-      order: 0,
-    });
+    throw new Error('无法解析 DOCX 文件，请尝试其他格式（如 .txt / .md）');
   }
 
   const totalWords = chapters.reduce((sum, ch) => {

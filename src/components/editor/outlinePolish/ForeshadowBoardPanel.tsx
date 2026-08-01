@@ -126,7 +126,7 @@ export function ForeshadowBoardPanel() {
   const handleCardClick = (item: ForeshadowBoardItem) => {
     const f = foreMap.get(item.foreshadowId);
     const plantedChapterId = f?.plantedChapterId ?? null;
-    useAppStore.setState({ currentChapterId: plantedChapterId });
+    if (plantedChapterId) setCurrentChapter(plantedChapterId);
   };
 
   /** 运行回收合理性检测（仅检测已回收伏笔） */

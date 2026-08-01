@@ -31,6 +31,9 @@ interface ElectronStorageAPI {
   // 批量写入：一次 IPC 写入多个 key，把 8 次 storage:write 合并成 1 次，
   // 避免触发令牌桶限流。返回 Record<key, boolean> 标识每个 key 的结果
   writeBatch: (entries: Record<string, unknown>) => Promise<Record<string, boolean>>;
+  // 批量读取：一次 IPC 读取多个 key，把 openProject 的 14 次 storage:read 合并成 1 次，
+  // 避免触发 storage:read 令牌桶限流（capacity=10 < 14）。返回 Record<key, value>，失败 key 值为 null
+  readBatch: (keys: string[]) => Promise<Record<string, unknown>>;
   remove: (key: string) => Promise<boolean>;
   listProjectDirs: () => Promise<string[]>;
   backupProject: (projectId: string, keepCount?: number) => Promise<boolean>;

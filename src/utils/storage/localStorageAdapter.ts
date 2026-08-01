@@ -189,6 +189,22 @@ export class LocalStorage implements StorageAPI {
     }
   }
 
+  // 批量读取：localStorage 直接顺序 getItem，无 IPC 限流问题。
+  // 与 ElectronStorage.getMany 对称，返回 Record<key, unknown>，
+  // key 不存在或 JSON 解析失败时值为 null
+  async getMany(keys: string[]): Promise<Record<string, unknown>> {
+    const results: Record<string, unknown> = {};
+    for (const key of keys) {
+      try {
+        const data = localStorage.getItem(key);
+        results[key] = data === null ? null : JSON.parse(data);
+      } catch {
+        results[key] = null;
+      }
+    }
+    return results;
+  }
+
   async remove(key: string): Promise<void> {
     localStorage.removeItem(key);
   }

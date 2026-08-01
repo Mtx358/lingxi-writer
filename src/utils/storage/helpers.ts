@@ -91,6 +91,10 @@ export interface StorageAPI {
   // 既减少往返延迟，又从根本上避免触发 storage:write 令牌桶限流。
   // 任一 key 写入失败时通过 toast 告知用户，但不会中断其他 key 的写入
   setMany: (entries: Record<string, unknown>) => Promise<void>;
+  // 批量读取：一次 IPC 读取多个 key，把 openProject 的 14 次 storage.get 合并为 1 次 IPC，
+  // 避免触发 storage:read 令牌桶限流（capacity=10 < 14）。返回 Record<key, value>，
+  // 读取失败或 key 不存在的值为 null，由调用方按 key 取值并用默认值回退
+  getMany: (keys: string[]) => Promise<Record<string, unknown>>;
   remove: (key: string) => Promise<void>;
 
   readProjectFile: (filePath: string) => Promise<{

@@ -62,6 +62,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 避免触发令牌桶限流。返回 Record<key, boolean> 标识每个 key 的结果
     writeBatch: (entries: Record<string, unknown>) =>
       invokeWithTimeout('storage:writeBatch', 30000, entries) as Promise<Record<string, boolean>>,
+    readBatch: (keys: string[]) =>
+      invokeWithTimeout('storage:readBatch', 30000, keys) as Promise<Record<string, unknown>>,
     remove: (key: string) => invokeWithTimeout('storage:remove', 10000, key),
     listProjectDirs: () => invokeWithTimeout('storage:listProjectDirs', 5000),
     backupProject: (projectId: string, keepCount?: number) =>

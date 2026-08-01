@@ -205,6 +205,39 @@ export function registerGlobalStorageHandlers(): void {
     }
   });
 
+  // 批量读取：一次 IPC 读取多个 key，把 openProject 的 14 次 storage:read 合并成 1 次，
+  // 避免触发 storage:read 的令牌桶限流（capacity=10 < 14）导致首次打开项目时部分请求
+  // 被拒、数据静默丢失（ElectronStorage.get catch 吞错返回 defaultValue）。
+  // 入参：keys: string[]，返回 Record<key, value>，读取失败的单个 key 值为 null
+  safeIpcHandle('storage:readBatch', async (_event, keys: string[]) => {
+    try {
+      if (!Array.isArray(keys)) {
+        logger.audit('security.input', 'storage:readBatch rejected: invalid keys');
+        return {};
+      }
+      const results: Record<string, unknown> = {};
+      for (const key of keys) {
+        if (!isValidStorageKey(key) && !READ_ONLY_STORAGE_KEYS.has(key)) {
+          logger.audit('security.input', 'storage:readBatch rejected: invalid storage key', { key });
+          results[key] = null;
+          continue;
+        }
+        try {
+          const filePath = resolveFilePath(key);
+          const data = await fs.readFile(filePath, 'utf-8');
+          results[key] = JSON.parse(data);
+        } catch (e) {
+          logger.warn('storage:readBatch item failed', { key, error: e instanceof Error ? e.message : String(e) });
+          results[key] = null;
+        }
+      }
+      return results;
+    } catch (e) {
+      logger.error('storage:readBatch error', e instanceof Error ? e : { error: String(e) });
+      return {};
+    }
+  });
+
   safeIpcHandle('storage:remove', async (_event, key: string) => {
     try {
       // aiSettings 不再走 READ_ONLY 路径：重置改由专用 IPC 处理
